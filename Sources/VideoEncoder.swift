@@ -16,15 +16,16 @@ final class VideoEncoder: @unchecked Sendable {
     private var failure: ((String) -> Void)?
     private var origin: CMTime?
     private var previousTime: CMTime?
+    private var frameRateMilli: Int = 60000
 
-    func start(handler: @escaping (VideoPacket) -> Void, failure: @escaping (String) -> Void) throws {
+    func start(mode: DisplayMode = .fullHD, handler: @escaping (VideoPacket) -> Void, failure: @escaping (String) -> Void) throws {
         try queue.sync {
             guard session == nil else { return }
             var created: VTCompressionSession?
             let specification: [CFString: Any] = [
                 kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder: true,
                 kVTVideoEncoderSpecification_EnableLowLatencyRateControl: true]
-            try check(VTCompressionSessionCreate(allocator: nil, width: 1920, height: 1080,
+            try check(VTCompressionSessionCreate(allocator: nil, width: Int32(mode.width), height: Int32(mode.height),
                 codecType: kCMVideoCodecType_H264, encoderSpecification: specification as CFDictionary,
                 imageBufferAttributes: nil, compressedDataAllocator: nil,
                 outputCallback: nil, refcon: nil, compressionSessionOut: &created))
@@ -33,9 +34,9 @@ final class VideoEncoder: @unchecked Sendable {
                 let properties: [CFString: Any] = [
                     kVTCompressionPropertyKey_RealTime: true,
                     kVTCompressionPropertyKey_AllowFrameReordering: false,
-                    kVTCompressionPropertyKey_ExpectedFrameRate: 60,
-                    kVTCompressionPropertyKey_AverageBitRate: 18_000_000,
-                    kVTCompressionPropertyKey_MaxKeyFrameInterval: 120,
+                    kVTCompressionPropertyKey_ExpectedFrameRate: Int(ceil(mode.fps)),
+                    kVTCompressionPropertyKey_AverageBitRate: min(80_000_000, max(2_000_000, Int(18_000_000 * Double(mode.width * mode.height) / (1920 * 1080) * mode.fps / 60))),
+                    kVTCompressionPropertyKey_MaxKeyFrameInterval: Int(ceil(mode.fps * 2)),
                     kVTCompressionPropertyKey_ProfileLevel: kVTProfileLevel_H264_High_AutoLevel]
                 for (key, value) in properties {
                     let status = VTSessionSetProperty(created, key: key, value: value as CFTypeRef)
@@ -54,6 +55,7 @@ final class VideoEncoder: @unchecked Sendable {
                     throw error("VideoToolbox inspect hardware: \(inspected)")
                 }
             } catch { VTCompressionSessionInvalidate(created); throw error }
+            frameRateMilli = mode.fpsMilli
             session = created
             budget = DispatchSemaphore(value: 6)
             self.handler = handler
@@ -73,7 +75,7 @@ final class VideoEncoder: @unchecked Sendable {
             let credit = budget
             let failure = failure
             let result = VTCompressionSessionEncodeFrame(session, imageBuffer: buffer,
-                presentationTimeStamp: relative, duration: CMTime(value: 1, timescale: 60),
+                presentationTimeStamp: relative, duration: CMTime(value: 1000, timescale: Int32(frameRateMilli)),
                 frameProperties: nil, infoFlagsOut: nil) { status, flags, sample in
                     guard status == noErr, !flags.contains(.frameDropped), let sample, CMSampleBufferDataIsReady(sample) else {
                         credit.signal()

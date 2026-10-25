@@ -10,13 +10,15 @@ import Combine
     private var helperID: UInt32?
     private var testWindow: NSWindow?
 
-    func start() async {
+    func start(mode: DisplayMode = .fullHD, serial: UInt32 = 1, name: String = "BlueScreen TV", origin requestedOrigin: CGPoint? = nil) async {
         guard !busy, displayID == nil else { return }
         busy = true
         defer { busy = false }
         do {
             let process = Process()
             process.executableURL = Bundle.main.executableURL!.deletingLastPathComponent().appendingPathComponent("VirtualDisplayHelper")
+            guard mode.valid else { throw failure("Неподдерживаемый режим экрана.") }
+            process.arguments = [String(mode.width), String(mode.height), String(mode.fps), String(serial), name]
             let output = Pipe()
             let input = Pipe()
             process.standardOutput = output
@@ -55,14 +57,17 @@ import Combine
             var count: UInt32 = 0
             guard CGGetOnlineDisplayList(32, &ids, &count) == .success else { throw failure("Не удалось прочитать конфигурацию экранов.") }
             let rightEdge = ids.prefix(Int(count)).filter { $0 != id }.map { CGDisplayBounds($0).maxX }.max() ?? 0
+            let target = requestedOrigin ?? CGPoint(x: rightEdge, y: 0)
             var config: CGDisplayConfigRef?
             guard CGBeginDisplayConfiguration(&config) == .success, let config else {
                 throw failure("Не удалось начать настройку второго экрана.")
             }
             let mirror = CGConfigureDisplayMirrorOfDisplay(config, id, kCGNullDirectDisplay)
-            let origin = CGConfigureDisplayOrigin(config, id, Int32(rightEdge), 0)
+            let origin = CGConfigureDisplayOrigin(config, id, Int32(target.x), Int32(target.y))
             let modes = CGDisplayCopyAllDisplayModes(id, nil) as? [CGDisplayMode] ?? []
-            guard let fullHD = modes.first(where: { $0.width == 1920 && $0.height == 1080 }) else {
+            guard let fullHD = modes.filter({ $0.width == mode.width && $0.height == mode.height })
+                .min(by: { abs($0.refreshRate - mode.fps) < abs($1.refreshRate - mode.fps) }),
+                abs(fullHD.refreshRate - mode.fps) < 0.5 else {
                 CGCancelDisplayConfiguration(config)
                 throw failure("macOS не предоставила режим Full HD для второго экрана.")
             }
@@ -75,15 +80,16 @@ import Combine
                 throw failure("macOS не применила расширение рабочего стола.")
             }
             for _ in 0..<40 {
-                if NSScreen.screens.contains(where: { Self.id($0) == id && abs($0.frame.minX - rightEdge) < 1 && $0.frame.width == 1920 && $0.frame.height == 1080 }) { break }
+                if NSScreen.screens.contains(where: { Self.id($0) == id && CGDisplayBounds(id).origin == target && CGDisplayBounds(id).width == Double(mode.width) && CGDisplayBounds(id).height == Double(mode.height) }) { break }
                 try await Task.sleep(nanoseconds: 100_000_000)
             }
             guard CGDisplayMirrorsDisplay(id) == kCGNullDirectDisplay,
-                NSScreen.screens.contains(where: { Self.id($0) == id && $0.frame.width == 1920 && $0.frame.height == 1080 }) else {
+                CGDisplayBounds(id).origin == target,
+                NSScreen.screens.contains(where: { Self.id($0) == id && CGDisplayBounds(id).width == Double(mode.width) && CGDisplayBounds(id).height == Double(mode.height) }) else {
                 throw failure("Не удалось подтвердить независимый второй рабочий стол.")
             }
             displayID = id
-            status = "Второй рабочий стол 1920 × 1080 создан справа от Mac."
+            status = "Экран создан: \(mode.title)."
         } catch {
             lifetime?.fileHandleForWriting.closeFile()
             lifetime = nil
@@ -91,6 +97,15 @@ import Combine
             helper = nil
             status = error.localizedDescription
         }
+    }
+
+    func move(to origin: CGPoint) {
+        guard let id = displayID else { return }
+        var config: CGDisplayConfigRef?
+        guard CGBeginDisplayConfiguration(&config) == .success, let config else { return }
+        if CGConfigureDisplayOrigin(config, id, Int32(origin.x), Int32(origin.y)) == .success {
+            _ = CGCompleteDisplayConfiguration(config, .forSession)
+        } else { CGCancelDisplayConfiguration(config) }
     }
 
     func stop() async {
@@ -103,7 +118,7 @@ import Combine
         lifetime?.fileHandleForWriting.closeFile()
         lifetime = nil
         for step in 0..<40 {
-            if let id, !Self.isAttached(id) { break }
+            if id == nil || !Self.isAttached(id!) { break }
             if step == 10, helper?.isRunning == true { helper?.terminate() }
             try? await Task.sleep(nanoseconds: 100_000_000)
         }

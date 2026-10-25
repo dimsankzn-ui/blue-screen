@@ -28,10 +28,14 @@ import Security
     private var publishedAt: TimeInterval = 0
     @Published private(set) var renderedFrames = 0
     @Published private(set) var renderedFPS: Double = 0
+    var requestedMode: DisplayMode?
+    @Published private(set) var selectedMode: DisplayMode = .fullHD
+    @Published private(set) var capabilities: DisplayCapabilities?
+    private let rememberPairing: Bool
     private let port: UInt16
     private var attempt = UUID()
 
-    init(port: UInt16 = 8845) { self.port = port }
+    init(port: UInt16 = 8845, rememberPairing: Bool = true) { self.port = port; self.rememberPairing = rememberPairing }
     var canEditHost: Bool { !busy && !connected && fingerprint.isEmpty }
 
     func probe(_ address: String) {
@@ -64,6 +68,7 @@ import Security
         do {
             let target = try validatedLocalAddress(address.trimmingCharacters(in: .whitespacesAndNewlines))
             guard let saved = try await Task.detached(operation: { try PairingStore.load(target) }).value else { return nil }
+            guard !Task.isCancelled else { return false }
             disconnect()
             host = target
             candidate = saved.certificate
@@ -145,7 +150,7 @@ import Security
                 switch state {
                 case .ready:
                     guard expected != nil, pin != nil || token?.count == 32 else { self.fail("Не удалось проверить устройство."); return }
-                    var hello = Data("BLUSCR03".utf8)
+                    var hello = Data("BLUSCR04".utf8)
                     hello.append(token == nil ? 0 : 1)
                     hello.append(Data(PairingStore.clientID.utf8))
                     hello.append(token ?? Data((pin ?? "").utf8))
@@ -181,50 +186,71 @@ import Security
     }
 
     private func readPairingToken(_ session: NWConnection, target: String, certificate: String) {
-        session.receive(minimumIncompleteLength: 32, maximumLength: 32) { [weak self] data, _, _, error in
-            Task { @MainActor in
-                guard let self, self.connection === session else { return }
-                guard error == nil, let data, data.count == 32 else { self.fail("Не удалось сохранить подключение. Обновите приложение на телевизоре."); return }
-                do {
-                    try await Task.detached { try PairingStore.save(target, certificate: certificate, token: data) }.value
-                } catch { self.fail("Не удалось запомнить телевизор: \(error.localizedDescription)"); return }
+        receive(session, count: 32) { [weak self] token in
+            guard let self else { return }
+            Task { @MainActor [self] in
+                do { if self.rememberPairing { try await Task.detached { try PairingStore.save(target, certificate: certificate, token: token) }.value } }
+                catch { self.fail("Не удалось запомнить телевизор: \(error.localizedDescription)"); return }
                 guard self.connection === session else { return }
-                self.timeout?.cancel()
-                self.busy = false
-                do {
-                    try self.video.start(handler: { [weak self] packet in
-                        Task { @MainActor in
-                            guard let self else { packet.accepted(); return }
-                            self.sendVideo(packet)
-                        }
-                    }, failure: { [weak self] message in
-                        Task { @MainActor in self?.fail(message) }
-                    })
-                } catch { self.fail(error.localizedDescription); return }
-                self.sentCount = 0
-                self.acceptedCount = 0
-                self.totalBytes = 0
-                self.renderedFrames = 0
-                self.renderedFPS = 0
-                self.connected = true
-                var setup = Data()
-                for number: UInt32 in [1920, 1080, 60] {
-                    var value = number.bigEndian
-                    setup.append(withUnsafeBytes(of: &value) { Data($0) })
+                self.receive(session, count: 4) { [weak self] header in
+                    guard let self else { return }
+                    let count = Int(header.reduce(UInt32(0)) { ($0 << 8) | UInt32($1) })
+                    guard count > 0 && count <= 16384 else { self.fail("Неверный список режимов телевизора."); return }
+                    self.receive(session, count: count) { [weak self] bytes in
+                        guard let self else { return }
+                        do {
+                            let caps = try JSONDecoder().decode(DisplayCapabilities.self, from: bytes)
+                            guard caps.protocolVersion == 4, let best = caps.available.first else { throw NSError(domain: "Mode", code: 1) }
+                            let mode = self.requestedMode ?? best
+                            guard caps.available.contains(mode) else {
+                                self.fail("Выбранный режим больше не поддерживается. Выберите «Автоматически»."); return
+                            }
+                            self.capabilities = caps
+                            self.selectedMode = mode
+                            self.beginVideo(session, mode: mode)
+                        } catch { self.fail("Приёмник не сообщил доступные режимы. Обновите приложение на TV.") }
+                    }
                 }
-                session.send(content: setup, completion: .contentProcessed { [weak self] error in
-                    if let error { Task { @MainActor in self?.fail(error.localizedDescription) } }
-                })
-                self.readFeedback(session)
-                self.framesSent = 0
-                self.bytesSent = 0
-                self.status = "Подключено по защищённому соединению. Ожидаю изображение второго экрана."
-                self.startHeartbeat()
-                let complete = self.completion
-                self.completion = nil
-                complete?(true)
             }
         }
+    }
+
+    private func receive(_ session: NWConnection, count: Int, completion: @escaping @MainActor (Data) -> Void) {
+        session.receive(minimumIncompleteLength: count, maximumLength: count) { [weak self] data, _, _, error in
+            Task { @MainActor in
+                guard let self, self.connection === session else { return }
+                guard error == nil, let data, data.count == count else { self.fail("Приёмник прервал подключение. Проверьте версию приложения на TV."); return }
+                completion(data)
+            }
+        }
+    }
+
+    private func beginVideo(_ session: NWConnection, mode: DisplayMode) {
+        timeout?.cancel()
+        busy = false
+        do {
+            try video.start(mode: mode, handler: { [weak self] packet in
+                Task { @MainActor in
+                    guard let self else { packet.accepted(); return }
+                    self.sendVideo(packet)
+                }
+            }, failure: { [weak self] message in Task { @MainActor in self?.fail(message) } })
+        } catch { fail(error.localizedDescription); return }
+        sentCount = 0; acceptedCount = 0; totalBytes = 0
+        renderedFrames = 0; renderedFPS = 0; framesSent = 0; bytesSent = 0
+        connected = true
+        var setup = Data()
+        for number in [mode.width, mode.height, mode.fpsMilli] {
+            var value = UInt32(number).bigEndian
+            setup.append(withUnsafeBytes(of: &value) { Data($0) })
+        }
+        session.send(content: setup, completion: .contentProcessed { [weak self] error in
+            if let error { Task { @MainActor in self?.fail(error.localizedDescription) } }
+        })
+        readFeedback(session)
+        status = "Подключено: \(mode.title)"
+        startHeartbeat()
+        let complete = completion; completion = nil; complete?(true)
     }
 
     func send(_ buffer: CVPixelBuffer, _ time: CMTime) {

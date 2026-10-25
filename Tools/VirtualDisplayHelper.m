@@ -8,7 +8,13 @@ int main(void) {
         [NSApp setActivationPolicy:NSApplicationActivationPolicyProhibited];
         BSVirtualDisplay *display = [BSVirtualDisplay new];
         NSError *error;
-        if (![display startWithError:&error]) {
+        NSArray<NSString *> *args = NSProcessInfo.processInfo.arguments;
+        unsigned int width = args.count > 1 ? args[1].intValue : 1920;
+        unsigned int height = args.count > 2 ? args[2].intValue : 1080;
+        double rate = args.count > 3 ? args[3].doubleValue : 60;
+        unsigned int serial = args.count > 4 ? (unsigned int)args[4].longLongValue : 1;
+        NSString *name = args.count > 5 ? args[5] : @"BlueScreen TV";
+        if (![display startWithWidth:width height:height rate:rate serial:serial name:name error:&error]) {
             fprintf(stderr, "%s\n", error.localizedDescription.UTF8String);
             return 1;
         }

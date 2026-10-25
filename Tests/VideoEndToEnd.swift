@@ -18,7 +18,7 @@ import AppKit
         let host = CommandLine.arguments[1]
         let expected = CommandLine.arguments[2]
         let seconds = Int(CommandLine.arguments[3]) ?? 30
-        let tv = TVConnection()
+        let tv = TVConnection(rememberPairing: false)
         let screen = SecondScreen()
         let preview = ScreenPreview()
         var samples: [[String: Any]] = []
@@ -30,11 +30,12 @@ import AppKit
             }
             guard tv.fingerprint == expected else { throw failure("Receiver identity mismatch or unavailable") }
             guard await tv.connect(pin: pin) else { throw failure(tv.status) }
-            await screen.start()
+            let mode = tv.selectedMode
+            await screen.start(mode: mode)
             guard let id = screen.displayID else { throw failure(screen.status) }
             screen.showTestWindow()
             preview.onVideoFrame = tv.frameHandler()
-            await preview.start(displayID: id)
+            await preview.start(displayID: id, mode: mode)
             guard preview.running else { throw failure(preview.status) }
             for index in 1...seconds {
                 try await Task.sleep(nanoseconds: 1_000_000_000)
@@ -49,7 +50,7 @@ import AppKit
                 }
                 print(String(format: "t=%d captured=%d accepted=%d rendered=%d rendered_fps=%.3f", index, preview.frames, tv.framesSent, tv.renderedFrames, tv.renderedFPS))
             }
-            let result: [String: Any] = ["width": 1920, "height": 1080, "target_fps": 60, "samples": samples]
+            let result: [String: Any] = ["width": mode.width, "height": mode.height, "target_fps": mode.fps, "samples": samples]
             let data = try JSONSerialization.data(withJSONObject: result, options: [.prettyPrinted, .sortedKeys])
             try data.write(to: URL(fileURLWithPath: "evidence/full-hd-benchmark.json"), options: .atomic)
         } catch {

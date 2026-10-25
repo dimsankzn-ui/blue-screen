@@ -5,6 +5,7 @@ NS_ASSUME_NONNULL_BEGIN
 @interface BSVirtualDisplay : NSObject
 @property(readonly) uint32_t displayID;
 - (BOOL)startWithError:(NSError * _Nullable * _Nullable)error;
+- (BOOL)startWithWidth:(unsigned int)width height:(unsigned int)height rate:(double)rate serial:(unsigned int)serial name:(NSString *)name error:(NSError * _Nullable * _Nullable)error;
 - (void)stop;
 @end
 NS_ASSUME_NONNULL_END

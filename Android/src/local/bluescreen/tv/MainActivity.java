@@ -25,6 +25,8 @@ import java.io.DataOutputStream;
 import java.io.FileOutputStream;
 import java.math.BigInteger;
 import java.net.Inet4Address;
+import java.net.ServerSocket;
+import java.net.Socket;
 import java.net.NetworkInterface;
 import java.security.KeyPairGenerator;
 import java.security.KeyPair;
@@ -55,6 +57,8 @@ public final class MainActivity extends Activity {
     private volatile String pin;
     private String fingerprint = "";
     private LinearLayout pairing;
+    private volatile ServerSocket presence;
+    private volatile DisplayCapabilities capabilities;
     private volatile Surface surface;
     private TextView details, state, overlay;
 
@@ -119,6 +123,8 @@ public final class MainActivity extends Activity {
     @Override public void onStart() {
         super.onStart();
         final int mine = ++generation;
+        capabilities = new DisplayCapabilities(getWindowManager().getDefaultDisplay());
+        new Thread(() -> servePresence(mine), "BlueScreen-presence").start();
         new Thread(() -> serve(mine), "BlueScreen-receiver").start();
     }
     @Override public void onStop() {
@@ -127,6 +133,7 @@ public final class MainActivity extends Activity {
         super.onStop();
     }
     private void closeSockets() {
+        try { if (presence != null) presence.close(); } catch (Exception ignored) {}
         try { if (client != null) client.close(); } catch (Exception ignored) {}
         try { if (listener != null) listener.close(); } catch (Exception ignored) {}
     }
@@ -219,6 +226,24 @@ public final class MainActivity extends Activity {
         });
     }
 
+    // Public, read-only local availability/mode advertisement. No pairing data or video.
+    private void servePresence(int mine) {
+        try (ServerSocket server = new ServerSocket(8846, 4)) {
+            if (generation != mine) return;
+            presence = server;
+            server.setSoTimeout(1000);
+            while (generation == mine) {
+                try (Socket socket = server.accept()) {
+                    socket.setSoTimeout(2000);
+                    socket.getOutputStream().write(capabilities.json());
+                    socket.getOutputStream().flush();
+                } catch (java.net.SocketTimeoutException ignored) {}
+            }
+        } catch (Exception error) {
+            if (generation == mine) android.util.Log.w("BlueScreen", "Availability service stopped", error);
+        }
+    }
+
     private void serve(int mine) {
         SSLServerSocket server = null;
         try {
@@ -259,9 +284,20 @@ public final class MainActivity extends Activity {
                     authenticated = true;
                     output.write(1);
                     output.write(token);
+                    byte[] modes = capabilities.json();
+                    output.writeInt(modes.length); output.write(modes);
                     output.flush();
-                    int width = input.readInt(), height = input.readInt(), fps = input.readInt();
-                    if (width != 1920 || height != 1080 || fps != 60) throw new java.io.IOException("Несовместимый формат видео");
+                    int width = input.readInt(), height = input.readInt(), fpsMilli = input.readInt();
+                    DisplayCapabilities.Mode selected = capabilities.find(width,height,fpsMilli);
+                    if (selected == null) throw new java.io.IOException("Неподдерживаемый режим экрана");
+                    int fps = (int)Math.ceil(fpsMilli/1000.0);
+                    runOnUiThread(() -> {
+                        if (generation != mine) return;
+                        WindowManager.LayoutParams params = getWindow().getAttributes();
+                        params.preferredDisplayModeId = selected.nativeID;
+                        getWindow().setAttributes(params);
+                        if (surface != null && surface.isValid()) surface.setFrameRate(fpsMilli/1000f, Surface.FRAME_RATE_COMPATIBILITY_FIXED_SOURCE);
+                    });
                     socket.setSoTimeout(15000);
                     long updated = 0;
                     while (generation == mine) {

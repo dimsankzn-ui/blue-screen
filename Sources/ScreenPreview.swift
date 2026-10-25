@@ -19,7 +19,7 @@ import CoreImage
     func sendLatestVideoFrame() { videoFrames.emitLatest() }
     private nonisolated let context = CIContext(options: [.cacheIntermediates: false])
 
-    func start(displayID: UInt32) async {
+    func start(displayID: UInt32, mode: DisplayMode = .fullHD) async {
         guard !busy, !running else { return }
         guard CGPreflightScreenCaptureAccess() else {
             status = "Нужно разрешение macOS на запись экрана. Без него предпросмотр не запускается."
@@ -33,10 +33,10 @@ import CoreImage
                 throw NSError(domain: "BlueScreen.Capture", code: 1, userInfo: [NSLocalizedDescriptionKey: "Второй экран не найден для захвата."])
             }
             let configuration = SCStreamConfiguration()
-            configuration.width = 1920
-            configuration.height = 1080
+            configuration.width = mode.width
+            configuration.height = mode.height
             // The virtual screen is 60 Hz; avoid capture-side phase throttling at the same cadence.
-            configuration.minimumFrameInterval = CMTime(value: 1, timescale: 120)
+            configuration.minimumFrameInterval = CMTime(value: 1000, timescale: Int32(mode.fpsMilli * 2))
             configuration.queueDepth = 3
             configuration.capturesAudio = false
             configuration.showsCursor = true
@@ -82,7 +82,7 @@ import CoreImage
         guard let cgImage = context.createCGImage(frame, from: frame.extent) else { return }
         Task { @MainActor [weak self] in
             guard let self, self.capture === stream else { return }
-            self.image = NSImage(cgImage: cgImage, size: NSSize(width: 1920, height: 1080))
+            self.image = NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
             self.latestFrame = cgImage
             self.frames = progress.count
         }

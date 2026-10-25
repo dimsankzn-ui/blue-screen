@@ -30,6 +30,10 @@
 }
 - (uint32_t)displayID { return _screen ? _screen.displayID : 0; }
 - (BOOL)startWithError:(NSError **)error {
+    return [self startWithWidth:1920 height:1080 rate:60 serial:1 name:@"BlueScreen TV" error:error];
+}
+- (BOOL)startWithWidth:(unsigned int)width height:(unsigned int)height rate:(double)rate serial:(unsigned int)serial name:(NSString *)name error:(NSError **)error {
+    if (width < 640 || width > 3840 || height < 360 || height > 2160 || width % 2 || height % 2 || !isfinite(rate) || rate < 15 || rate > 120) return NO;
     if (_screen) return YES;
     @autoreleasepool {
     @try {
@@ -41,13 +45,13 @@
             @throw [NSException exceptionWithName:@"Unavailable" reason:@"Эта macOS не предоставляет экспериментальный виртуальный экран." userInfo:nil];
         }
         BSDescriptor *descriptor = [[descriptorClass alloc] init];
-        descriptor.name = @"BlueScreen TV";
+        descriptor.name = name;
         descriptor.vendorID = 0x4253;
         descriptor.productID = 1;
-        descriptor.serialNum = 1;
-        if ([descriptor respondsToSelector:@selector(setSerialNumber:)]) descriptor.serialNumber = 1;
-        descriptor.maxPixelsWide = 1920;
-        descriptor.maxPixelsHigh = 1080;
+        descriptor.serialNum = serial;
+        if ([descriptor respondsToSelector:@selector(setSerialNumber:)]) descriptor.serialNumber = serial;
+        descriptor.maxPixelsWide = width;
+        descriptor.maxPixelsHigh = height;
         descriptor.sizeInMillimeters = CGSizeMake(508.0, 285.75);
         descriptor.whitePoint = CGPointMake(0.3127, 0.3290);
         descriptor.redPrimary = CGPointMake(0.64, 0.33);
@@ -57,7 +61,7 @@
         BSDisplay *screen = [[displayClass alloc] initWithDescriptor:descriptor];
         BSSettings *settings = [[settingsClass alloc] init];
         settings.hiDPI = 0;
-        settings.modes = @[[[modeClass alloc] initWithWidth:1920 height:1080 refreshRate:60]];
+        settings.modes = @[[[modeClass alloc] initWithWidth:width height:height refreshRate:rate]];
         if (!screen || ![screen applySettings:settings] || screen.displayID == 0) {
             @throw [NSException exceptionWithName:@"CreationFailed" reason:@"macOS не создала виртуальный экран 1920 × 1080." userInfo:nil];
         }

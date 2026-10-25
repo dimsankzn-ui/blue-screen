@@ -15,7 +15,7 @@ final class Wire {
     }
     static Hello readHello(DataInputStream input) throws IOException {
         byte[] magic = new byte[8]; input.readFully(magic);
-        if (!MessageDigest.isEqual(magic, "BLUSCR03".getBytes(StandardCharsets.US_ASCII))) throw new IOException("Обновите приложение на Mac");
+        if (!MessageDigest.isEqual(magic, "BLUSCR04".getBytes(StandardCharsets.US_ASCII))) throw new IOException("Обновите приложение на Mac");
         int mode = input.readUnsignedByte();
         if (mode != 0 && mode != 1) throw new IOException("Неверный тип подключения");
         byte[] id = new byte[36]; input.readFully(id);

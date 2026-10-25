@@ -32,7 +32,7 @@ public final class WireChecks {
     }
     static byte[] hello(int mode, String id, byte[] secret) throws Exception {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
-        out.write("BLUSCR03".getBytes(StandardCharsets.US_ASCII)); out.write(mode);
+        out.write("BLUSCR04".getBytes(StandardCharsets.US_ASCII)); out.write(mode);
         out.write(id.getBytes(StandardCharsets.US_ASCII)); out.write(secret); return out.toByteArray();
     }
     static DataInputStream input(byte[] data) { return new DataInputStream(new ByteArrayInputStream(data)); }
