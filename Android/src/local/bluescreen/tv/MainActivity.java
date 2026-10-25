@@ -3,6 +3,10 @@ package local.bluescreen.tv;
 import android.app.Activity;
 import android.graphics.Color;
 import android.os.Bundle;
+import android.util.AtomicFile;
+import android.util.Base64;
+import java.io.File;
+import java.io.FileInputStream;
 import android.security.keystore.KeyGenParameterSpec;
 import android.security.keystore.KeyProperties;
 import android.view.Gravity;
@@ -83,6 +87,15 @@ public final class MainActivity extends Activity {
         Button close = new Button(this);
         close.setText("Закрыть приёмник");
         close.setOnClickListener(v -> finish());
+        Button forget = new Button(this);
+        forget.setText("Забыть все Mac");
+        forget.setOnClickListener(v -> {
+            getSharedPreferences("trusted-macs", MODE_PRIVATE).edit().clear().commit();
+            pin = String.format(Locale.US, "%06d", random.nextInt(1000000));
+            try { if (client != null) client.close(); } catch (Exception ignored) {}
+            waiting(generation, "Сохранённые Mac удалены");
+        });
+        pairing.addView(forget);
         pairing.addView(close);
         overlay = label("", 14);
         overlay.setBackgroundColor(0xA0000000);
@@ -119,6 +132,12 @@ public final class MainActivity extends Activity {
     }
 
     private KeyStore identity() throws Exception {
+        File persisted = new File(getNoBackupFilesDir(), "receiver-identity.p12");
+        if (persisted.exists()) {
+            KeyStore saved = KeyStore.getInstance("PKCS12");
+            try (FileInputStream file = new AtomicFile(persisted).openRead()) { saved.load(file, new char[0]); }
+            return saved;
+        }
         KeyStore keys = KeyStore.getInstance("AndroidKeyStore");
         keys.load(null);
         String alias = "bluescreen-receiver-rsa-v1";
@@ -137,10 +156,10 @@ public final class MainActivity extends Activity {
         }
             return keys;
         } catch (java.security.GeneralSecurityException | java.security.ProviderException error) {
-            android.util.Log.w("BlueScreen", "AndroidKeyStore unavailable; using an ephemeral session certificate");
+            android.util.Log.w("BlueScreen", "AndroidKeyStore unavailable; using app-private persistent identity");
         }
-        // Some TV firmware cannot create AndroidKeyStore keys. Keep fallback keys in
-        // memory only: no shared private key in the APK and no private key on disk.
+        // Fallback identity stays in Android internal no-backup storage, private to this app.
+        // Persist it so an already paired Mac can verify the same TV after a restart.
         KeyPairGenerator generator = KeyPairGenerator.getInstance("RSA");
         generator.initialize(2048, random);
         KeyPair pair = generator.generateKeyPair();
@@ -148,12 +167,16 @@ public final class MainActivity extends Activity {
         X500Principal subject = new X500Principal("CN=BlueScreen TV Session");
         java.security.cert.X509Certificate cert = new JcaX509CertificateConverter().setProvider(provider).getCertificate(
             new JcaX509v3CertificateBuilder(subject, new BigInteger(120, random),
-                new Date(System.currentTimeMillis() - 86400000L), new Date(System.currentTimeMillis() + 86400000L),
+                new Date(System.currentTimeMillis() - 86400000L), new Date(System.currentTimeMillis() + 315360000000L),
                 subject, pair.getPublic()).build(new JcaContentSignerBuilder("SHA256withRSA").setProvider(provider).build(pair.getPrivate())));
         cert.verify(pair.getPublic());
         keys = KeyStore.getInstance("PKCS12");
         keys.load(null, new char[0]);
         keys.setKeyEntry("session", pair.getPrivate(), new char[0], new java.security.cert.Certificate[]{cert});
+        AtomicFile storage = new AtomicFile(persisted);
+        FileOutputStream file = storage.startWrite();
+        try { keys.store(file, new char[0]); storage.finishWrite(file); }
+        catch (Exception error) { storage.failWrite(file); throw error; }
         return keys;
     }
 
@@ -192,7 +215,7 @@ public final class MainActivity extends Activity {
             pairing.setVisibility(View.VISIBLE);
             overlay.setVisibility(View.GONE);
             details.setText("IP: " + addresses() + "\nКод: " + pin + "\nУстройство: " + fingerprint);
-            state.setText(message + "\nНа Mac сверьте номер устройства, затем введите код.\nПриёмник работает только пока открыт этот экран.");
+            state.setText(message + "\nПервый раз: введите IP и код на Mac. Потом — просто «Подключиться».\nПриёмник работает, пока открыт этот экран.");
         });
     }
 
@@ -221,9 +244,21 @@ public final class MainActivity extends Activity {
                     if (failures >= 3) continue;
                     DataInputStream input = new DataInputStream(socket.getInputStream());
                     DataOutputStream output = new DataOutputStream(socket.getOutputStream());
-                    if (!Wire.authenticate(input, pin)) { failures++; output.write(0); output.flush(); continue; }
+                    Wire.Hello hello = Wire.readHello(input);
+                    android.content.SharedPreferences trusted = getSharedPreferences("trusted-macs", MODE_PRIVATE);
+                    String encoded = trusted.getString(hello.clientID, null);
+                    byte[] stored = encoded == null ? null : Base64.decode(encoded, Base64.NO_WRAP);
+                    if (!Wire.authorize(hello, pin, stored)) { failures++; output.write(0); output.flush(); continue; }
+                    byte[] token = hello.credential;
+                    if (!hello.remembered) {
+                        if (trusted.getAll().size() >= 16 && encoded == null) { output.write(0); output.flush(); continue; }
+                        token = new byte[32]; random.nextBytes(token);
+                        String hash = Base64.encodeToString(MessageDigest.getInstance("SHA-256").digest(token), Base64.NO_WRAP);
+                        if (!trusted.edit().putString(hello.clientID, hash).commit()) throw new java.io.IOException("Не удалось запомнить Mac");
+                    }
                     authenticated = true;
                     output.write(1);
+                    output.write(token);
                     output.flush();
                     int width = input.readInt(), height = input.readInt(), fps = input.readInt();
                     if (width != 1920 || height != 1080 || fps != 60) throw new java.io.IOException("Несовместимый формат видео");
@@ -262,7 +297,7 @@ public final class MainActivity extends Activity {
                                 if (generation != mine) return;
                                 pairing.setVisibility(View.GONE);
                                 overlay.setText(text);
-                                overlay.setVisibility(View.VISIBLE);
+                                overlay.setVisibility(View.GONE);
                             });
                         }
                     }

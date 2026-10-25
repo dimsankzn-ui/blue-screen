@@ -5,6 +5,7 @@
 int main(void) {
     @autoreleasepool {
         [NSApplication sharedApplication];
+        [NSApp setActivationPolicy:NSApplicationActivationPolicyProhibited];
         BSVirtualDisplay *display = [BSVirtualDisplay new];
         NSError *error;
         if (![display startWithError:&error]) {

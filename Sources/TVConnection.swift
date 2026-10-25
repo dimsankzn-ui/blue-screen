@@ -4,6 +4,7 @@ import CryptoKit
 import Network
 import CoreVideo
 import CoreMedia
+import Security
 
 @MainActor final class TVConnection: ObservableObject {
     @Published private(set) var status = "Откройте «Голубой экран TV» на телевизоре."
@@ -58,6 +59,26 @@ import CoreMedia
         }
     }
 
+    // nil means this TV has not been paired on this Mac yet.
+    func reconnect(_ address: String) async -> Bool? {
+        do {
+            let target = try validatedLocalAddress(address.trimmingCharacters(in: .whitespacesAndNewlines))
+            guard let saved = try await Task.detached(operation: { try PairingStore.load(target) }).value else { return nil }
+            disconnect()
+            host = target
+            candidate = saved.certificate
+            fingerprint = Self.shortFingerprint(saved.certificate)
+            return await withCheckedContinuation { continuation in
+                busy = true
+                status = "Подключаюсь…"
+                completion = { continuation.resume(returning: $0) }
+                open(target, expected: saved.certificate, pin: nil, token: saved.token)
+            }
+        } catch { status = error.localizedDescription; return false }
+    }
+
+    func forget(_ address: String) throws { try PairingStore.remove(address) }
+
     func disconnect() {
         attempt = UUID()
         timeout?.cancel()
@@ -80,7 +101,7 @@ import CoreMedia
         status = "Подключение выключено."
     }
 
-    private func open(_ target: String, expected: String?, pin: String?) {
+    private func open(_ target: String, expected: String?, pin: String?, token: Data? = nil) {
         connection?.cancel()
         let attempt = UUID()
         self.attempt = attempt
@@ -123,12 +144,16 @@ import CoreMedia
                 guard let self, let session, self.connection === session else { return }
                 switch state {
                 case .ready:
-                    guard let pin, expected != nil else { self.fail("Не удалось проверить устройство."); return }
-                    session.send(content: Data(("BLUSCR02" + pin).utf8), completion: .contentProcessed { [weak self] error in
+                    guard expected != nil, pin != nil || token?.count == 32 else { self.fail("Не удалось проверить устройство."); return }
+                    var hello = Data("BLUSCR03".utf8)
+                    hello.append(token == nil ? 0 : 1)
+                    hello.append(Data(PairingStore.clientID.utf8))
+                    hello.append(token ?? Data((pin ?? "").utf8))
+                    session.send(content: hello, completion: .contentProcessed { [weak self] error in
                         Task { @MainActor in
                             guard let self, self.connection === session else { return }
                             if let error { self.fail(error.localizedDescription); return }
-                            self.readAuthentication(session)
+                            self.readAuthentication(session, target: target, certificate: expected!, remembered: token != nil)
                         }
                     })
                 case .failed(let error):
@@ -143,13 +168,27 @@ import CoreMedia
         session.start(queue: .main)
     }
 
-    private func readAuthentication(_ session: NWConnection) {
+    private func readAuthentication(_ session: NWConnection, target: String, certificate: String, remembered: Bool) {
         session.receive(minimumIncompleteLength: 1, maximumLength: 1) { [weak self] data, _, _, error in
             Task { @MainActor in
                 guard let self, self.connection === session else { return }
                 guard error == nil, data == Data([1]) else {
-                    self.fail("Телевизор не подтвердил код. Проверьте код и попробуйте снова."); return
+                    self.fail(remembered ? "Телевизор забыл этот Mac. Нажмите «Забыть подключение» и свяжите устройства заново." : "Неверный код. Подключитесь заново и введите код с телевизора."); return
                 }
+                self.readPairingToken(session, target: target, certificate: certificate)
+            }
+        }
+    }
+
+    private func readPairingToken(_ session: NWConnection, target: String, certificate: String) {
+        session.receive(minimumIncompleteLength: 32, maximumLength: 32) { [weak self] data, _, _, error in
+            Task { @MainActor in
+                guard let self, self.connection === session else { return }
+                guard error == nil, let data, data.count == 32 else { self.fail("Не удалось сохранить подключение. Обновите приложение на телевизоре."); return }
+                do {
+                    try await Task.detached { try PairingStore.save(target, certificate: certificate, token: data) }.value
+                } catch { self.fail("Не удалось запомнить телевизор: \(error.localizedDescription)"); return }
+                guard self.connection === session else { return }
                 self.timeout?.cancel()
                 self.busy = false
                 do {
@@ -288,5 +327,52 @@ import CoreMedia
         let short = Array(hash.prefix(12))
         guard short.count == 12 else { return "" }
         return stride(from: 0, to: 12, by: 4).map { String(short[$0..<($0 + 4)]) }.joined(separator: "-")
+    }
+}
+
+// Secrets live in the login Keychain; preferences contain only the public client ID.
+struct PairingStore {
+    struct Saved: Codable { let certificate: String; let token: Data }
+    static var clientID: String {
+        if let value = UserDefaults.standard.string(forKey: "pairing.clientID") { return value }
+        let value = UUID().uuidString
+        UserDefaults.standard.set(value, forKey: "pairing.clientID")
+        return value
+    }
+    private static func query(_ host: String) -> [String: Any] {
+        [kSecClass as String: kSecClassGenericPassword,
+         kSecAttrService as String: "local.bluescreen.pairing.v1",
+         kSecAttrAccount as String: host]
+    }
+    static func load(_ host: String) throws -> Saved? {
+        var q = query(host)
+        q[kSecReturnData as String] = true
+        q[kSecMatchLimit as String] = kSecMatchLimitOne
+        var item: CFTypeRef?
+        let result = SecItemCopyMatching(q as CFDictionary, &item)
+        if result == errSecItemNotFound { return nil }
+        guard result == errSecSuccess, let data = item as? Data else { throw failure(result) }
+        let saved = try JSONDecoder().decode(Saved.self, from: data)
+        guard saved.token.count == 32, saved.certificate.count == 64 else { throw failure(errSecDecode) }
+        return saved
+    }
+    static func save(_ host: String, certificate: String, token: Data) throws {
+        let data = try JSONEncoder().encode(Saved(certificate: certificate, token: token))
+        let q = query(host)
+        let result = SecItemUpdate(q as CFDictionary, [kSecValueData as String: data] as CFDictionary)
+        if result == errSecItemNotFound {
+            var add = q
+            add[kSecValueData as String] = data
+            add[kSecAttrLabel as String] = "Голубой экран — телевизор"
+            let inserted = SecItemAdd(add as CFDictionary, nil)
+            guard inserted == errSecSuccess else { throw failure(inserted) }
+        } else if result != errSecSuccess { throw failure(result) }
+    }
+    static func remove(_ host: String) throws {
+        let result = SecItemDelete(query(host) as CFDictionary)
+        guard result == errSecSuccess || result == errSecItemNotFound else { throw failure(result) }
+    }
+    private static func failure(_ code: OSStatus) -> NSError {
+        NSError(domain: NSOSStatusErrorDomain, code: Int(code), userInfo: [NSLocalizedDescriptionKey: "Связка ключей macOS недоступна (\(code))."])
     }
 }

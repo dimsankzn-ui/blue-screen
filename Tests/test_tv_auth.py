@@ -27,7 +27,7 @@ with socket.create_connection((str(host), 8845), timeout=5) as tcp:
         # Verify it before transmitting any authentication bytes; trust is not disabled.
         if connection.getpeercert(binary_form=True) != certificate:
             raise RuntimeError("Receiver certificate mismatch")
-        connection.sendall(b"BLUSCR02abcdef")  # Cannot equal the receiver's six numeric digits.
+        connection.sendall(b"BLUSCR03\x00" + b"12345678-1234-1234-1234-123456789012" + b"abcdef")  # Cannot equal the receiver's six numeric digits.
         if connection.recv(1) != b"\x00":
             raise AssertionError("Receiver did not reject invalid authentication")
 print("PASS: real Android receiver used TLS 1.2, exact certificate verified, invalid code rejected; no image transmitted")
