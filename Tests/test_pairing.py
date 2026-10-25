@@ -46,7 +46,7 @@ def authenticate(mode, secret, accepted=True):
     with socket.create_connection((args.host, 8845), timeout=5) as tcp:
         with context.wrap_socket(tcp, server_hostname=args.host) as connection:
             assert connection.getpeercert(binary_form=True) == cert, 'Certificate changed'
-            connection.sendall(b'BLUSCR04' + bytes([mode]) + client_id + secret)
+            connection.sendall(b'BLUSCR05' + bytes([mode]) + client_id + secret)
             status = exact(connection, 1)
             assert status == (b'\x01' if accepted else b'\x00'), 'Unexpected authentication result'
             if not accepted:
@@ -55,7 +55,7 @@ def authenticate(mode, secret, accepted=True):
             size = struct.unpack('>I', exact(connection, 4))[0]
             assert 0 < size <= 16384
             caps = json.loads(exact(connection, size))
-            assert caps['protocolVersion'] == 4 and caps['modes']
+            assert caps['protocolVersion'] == 5 and caps['modes']
             mode = max(caps['modes'], key=lambda m: (m['width']*m['height'],m['fpsMilli']))
             connection.sendall(struct.pack('>IIII', mode['width'], mode['height'], mode['fpsMilli'], 0))
             assert exact(connection, 12) == bytes(12), 'No video heartbeat confirmation'

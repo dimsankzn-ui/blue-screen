@@ -19,10 +19,11 @@ public final class WireChecks {
             try { Wire.readHello(input(invalid)); throw new AssertionError("Invalid hello accepted"); }
             catch (IOException expected) {}
         }
-        for (int size : new int[]{-1, Wire.MAX_FRAME + 1, Integer.MAX_VALUE}) {
+        for (int size : new int[]{-2, Wire.MAX_FRAME + 1, Integer.MAX_VALUE}) {
             try { Wire.readFrame(input(packet(size))); throw new AssertionError("Accepted oversized frame"); }
             catch (IOException expected) {}
         }
+        if (Wire.readFrame(input(packet(-1))) != null) throw new AssertionError("Sleep control rejected");
         if (Wire.readFrame(input(packet(0))).length != 0) throw new AssertionError();
         try { Wire.readFrame(input(packet(10))); throw new AssertionError("Accepted truncated frame"); }
         catch (EOFException expected) {}
@@ -32,7 +33,7 @@ public final class WireChecks {
     }
     static byte[] hello(int mode, String id, byte[] secret) throws Exception {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
-        out.write("BLUSCR04".getBytes(StandardCharsets.US_ASCII)); out.write(mode);
+        out.write("BLUSCR05".getBytes(StandardCharsets.US_ASCII)); out.write(mode);
         out.write(id.getBytes(StandardCharsets.US_ASCII)); out.write(secret); return out.toByteArray();
     }
     static DataInputStream input(byte[] data) { return new DataInputStream(new ByteArrayInputStream(data)); }

@@ -1,5 +1,8 @@
 #import "VirtualDisplay.h"
 #import <CoreGraphics/CoreGraphics.h>
+#import <IOKit/IOMessage.h>
+uint32_t BSSystemCanSleepMessage(void) { return kIOMessageCanSystemSleep; }
+uint32_t BSSystemWillSleepMessage(void) { return kIOMessageSystemWillSleep; }
 
 // Non-public CoreGraphics API, also used by Chromium's virtual display tests:
 // https://chromium.googlesource.com/chromium/src/+/HEAD/ui/display/mac/test/virtual_display_util_mac.mm

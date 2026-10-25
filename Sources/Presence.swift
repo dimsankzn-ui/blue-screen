@@ -28,7 +28,7 @@ final class PresenceProbe: @unchecked Sendable {
             guard error == nil, self.bytes.count <= 16384 else { self.finish(nil); return }
             if done {
                 let caps = try? JSONDecoder().decode(DisplayCapabilities.self, from: self.bytes)
-                self.finish(caps?.protocolVersion == 4 ? caps : nil)
+                self.finish(caps?.protocolVersion == 5 ? caps : nil)
             } else { self.receive() }
         }
     }

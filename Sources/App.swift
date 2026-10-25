@@ -97,12 +97,17 @@ struct Dashboard: View {
             }.textFieldStyle(.roundedBorder).padding(24).frame(width: 390)
         }
         .task {
+            library.startPowerObservation()
             while !Task.isCancelled {
                 await library.refreshPresence()
                 do { try await Task.sleep(nanoseconds: 5_000_000_000) } catch { break }
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in screenAllowed = CGPreflightScreenCaptureAccess() }
+        .alert("Восстановить подключение экранов?",isPresented:$library.resumeOffered) {
+            Button("Восстановить") { library.acceptResume() }
+            Button("Позже",role:.cancel) { library.declineResume() }
+        } message: { Text("Mac вышел из сна. Вернуть ранее подключённые телевизоры в режим расширенных экранов?") }
         .onDisappear { library.shutdown() }
     }
 }
@@ -168,10 +173,10 @@ struct MonitorEditor: View {
                 }
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Расположение относительно MacBook").font(.headline)
-                    Picker("Расположение", selection: $monitor.profile.side) {
-                        ForEach(ScreenSide.allCases) { side in Text(side.title).tag(side) }
+                    Picker("Расположение", selection: Binding(get:{ library.effectiveSide(for:monitor) ?? monitor.profile.side },set:{ library.setSide($0,for:monitor) })) {
+                        ForEach(library.availableSides(for:monitor)) { side in Text(side.title).tag(side) }
                     }.pickerStyle(.segmented).disabled(monitor.working)
-                    Text("На одной стороне экраны выстраиваются друг за другом.").font(.caption).foregroundStyle(.secondary)
+                    Text("Одна сторона — один подключённый экран.").font(.caption).foregroundStyle(.secondary)
                 }
                 if pairing {
                     VStack(alignment: .leading, spacing: 8) {
@@ -191,7 +196,7 @@ struct MonitorEditor: View {
                         Text(monitor.tv.connected ? "Отключиться" : (pairing ? "Подтвердить и подключиться" : "Подключиться")).frame(maxWidth: .infinity)
                     }.padding(.vertical, 5)
                 }.buttonStyle(.borderedProminent).controlSize(.large)
-                    .disabled(monitor.working || monitor.tv.busy || (!monitor.tv.connected && (!screenAllowed || monitor.profile.host.isEmpty)) || (pairing && code.count != 6))
+                    .disabled(monitor.working || monitor.tv.busy || (!monitor.tv.connected && (!screenAllowed || library.isSleeping || monitor.profile.host.isEmpty || !library.canConnect(monitor))) || (pairing && code.count != 6))
                 if pairing { Button("Отмена") { monitor.disconnect(); code = "" } }
                 if !monitor.message.isEmpty { Text(monitor.message).font(.callout).foregroundStyle(.secondary).textSelection(.enabled) }
                 if !screenAllowed { Text("Для подключения разрешите запись экрана в macOS.").font(.caption).foregroundStyle(.secondary) }
@@ -200,7 +205,6 @@ struct MonitorEditor: View {
         .onChange(of: monitor.profile.name) { _, _ in library.save() }
         .onChange(of: monitor.profile.host) { _, _ in monitor.online = nil; library.save() }
         .onChange(of: monitor.profile.mode) { _, _ in library.save() }
-        .onChange(of: monitor.profile.side) { _, _ in library.save(); library.relayout() }
         .onChange(of: monitor.tv.connected) { _, connected in if connected { code = "" } }
     }
 }

@@ -25,12 +25,14 @@ final class VideoDecoder implements AutoCloseable {
     private final ArrayDeque<Long> presentations = new ArrayDeque<>();
     private long loggedAt;
 
-    VideoDecoder(int width, int height, int fps, byte[] configuration, Surface surface) throws Exception {
+    VideoDecoder(int width, int height, int fps, byte[] configuration, Surface surface, String encoding) throws Exception {
+        String mime=encoding.equals("hevc") ? "video/hevc" : "video/avc";
+        boolean hevc=encoding.equals("hevc");
         MediaCodecInfo chosen = null;
         for (MediaCodecInfo info : new MediaCodecList(MediaCodecList.ALL_CODECS).getCodecInfos()) {
             if (info.isEncoder() || !info.isHardwareAccelerated()) continue;
             for (String type : info.getSupportedTypes()) {
-                if (!"video/avc".equalsIgnoreCase(type)) continue;
+                if (!mime.equalsIgnoreCase(type)) continue;
                 MediaCodecInfo.CodecCapabilities caps = info.getCapabilitiesForType(type);
                 if (caps.getVideoCapabilities().areSizeAndRateSupported(width, height, fps)) { chosen = info; break; }
             }
@@ -38,16 +40,20 @@ final class VideoDecoder implements AutoCloseable {
         }
         if (chosen == null) throw new IOException("Нет аппаратного H.264-декодера для 1920×1080 / 60");
         List<byte[]> parameters = splitParameters(configuration);
-        if (parameters.size() != 2 || (parameters.get(0)[4] & 31) != 7 || (parameters.get(1)[4] & 31) != 8)
-            throw new IOException("Неверные параметры H.264");
-        MediaFormat format = MediaFormat.createVideoFormat("video/avc", width, height);
-        format.setByteBuffer("csd-0", ByteBuffer.wrap(parameters.get(0)));
-        format.setByteBuffer("csd-1", ByteBuffer.wrap(parameters.get(1)));
+        if (hevc) {
+            if(parameters.size()!=3 || ((parameters.get(0)[4]>>1)&63)!=32 || ((parameters.get(1)[4]>>1)&63)!=33 || ((parameters.get(2)[4]>>1)&63)!=34) throw new IOException("Неверные параметры HEVC");
+        } else if(parameters.size()!=2 || (parameters.get(0)[4]&31)!=7 || (parameters.get(1)[4]&31)!=8) throw new IOException("Неверные параметры H.264");
+        MediaFormat format = MediaFormat.createVideoFormat(mime, width, height);
+        if (hevc) { format.setByteBuffer("csd-0", ByteBuffer.wrap(configuration)); }
+        else {
+            format.setByteBuffer("csd-0", ByteBuffer.wrap(parameters.get(0)));
+            format.setByteBuffer("csd-1", ByteBuffer.wrap(parameters.get(1)));
+        }
         format.setInteger(MediaFormat.KEY_FRAME_RATE, fps);
         format.setFloat(MediaFormat.KEY_OPERATING_RATE, fps);
         format.setInteger(MediaFormat.KEY_PRIORITY, 0);
         format.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, Wire.MAX_FRAME);
-        if (chosen.getCapabilitiesForType("video/avc").isFeatureSupported("low-latency")) format.setInteger(MediaFormat.KEY_LOW_LATENCY, 1);
+        if (chosen.getCapabilitiesForType(mime).isFeatureSupported("low-latency")) format.setInteger(MediaFormat.KEY_LOW_LATENCY, 1);
         codec = MediaCodec.createByCodecName(chosen.getName());
         try {
             codec.configure(format, surface, null, 0);

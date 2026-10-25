@@ -1,5 +1,6 @@
 # Local builds, environments and credentials
 build/
+.local-signing/
 Android/build/
 .venv/
 __pycache__/

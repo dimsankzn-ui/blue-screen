@@ -17,16 +17,17 @@ final class VideoEncoder: @unchecked Sendable {
     private var origin: CMTime?
     private var previousTime: CMTime?
     private var frameRateMilli: Int = 60000
+    private var usesHEVC = false
 
     func start(mode: DisplayMode = .fullHD, handler: @escaping (VideoPacket) -> Void, failure: @escaping (String) -> Void) throws {
         try queue.sync {
             guard session == nil else { return }
             var created: VTCompressionSession?
-            let specification: [CFString: Any] = [
-                kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder: true,
-                kVTVideoEncoderSpecification_EnableLowLatencyRateControl: true]
+            let hevc = mode.codec == "hevc"
+            var specification: [CFString: Any] = [kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder: true]
+            if !hevc { specification[kVTVideoEncoderSpecification_EnableLowLatencyRateControl] = true }
             try check(VTCompressionSessionCreate(allocator: nil, width: Int32(mode.width), height: Int32(mode.height),
-                codecType: kCMVideoCodecType_H264, encoderSpecification: specification as CFDictionary,
+                codecType: hevc ? kCMVideoCodecType_HEVC : kCMVideoCodecType_H264, encoderSpecification: specification as CFDictionary,
                 imageBufferAttributes: nil, compressedDataAllocator: nil,
                 outputCallback: nil, refcon: nil, compressionSessionOut: &created))
             guard let created else { throw error("Аппаратный видеокодер недоступен.") }
@@ -37,7 +38,7 @@ final class VideoEncoder: @unchecked Sendable {
                     kVTCompressionPropertyKey_ExpectedFrameRate: Int(ceil(mode.fps)),
                     kVTCompressionPropertyKey_AverageBitRate: min(80_000_000, max(2_000_000, Int(18_000_000 * Double(mode.width * mode.height) / (1920 * 1080) * mode.fps / 60))),
                     kVTCompressionPropertyKey_MaxKeyFrameInterval: Int(ceil(mode.fps * 2)),
-                    kVTCompressionPropertyKey_ProfileLevel: kVTProfileLevel_H264_High_AutoLevel]
+                    kVTCompressionPropertyKey_ProfileLevel: hevc ? kVTProfileLevel_HEVC_Main_AutoLevel : kVTProfileLevel_H264_High_AutoLevel]
                 for (key, value) in properties {
                     let status = VTSessionSetProperty(created, key: key, value: value as CFTypeRef)
                     guard status == noErr else { throw error("VideoToolbox \(key): \(status)") }
@@ -55,6 +56,7 @@ final class VideoEncoder: @unchecked Sendable {
                     throw error("VideoToolbox inspect hardware: \(inspected)")
                 }
             } catch { VTCompressionSessionInvalidate(created); throw error }
+            usesHEVC = hevc
             frameRateMilli = mode.fpsMilli
             session = created
             budget = DispatchSemaphore(value: 6)
@@ -72,6 +74,7 @@ final class VideoEncoder: @unchecked Sendable {
             if origin == nil { origin = time }
             previousTime = time
             let relative = CMTimeSubtract(time, origin!)
+            let hevc = usesHEVC
             let credit = budget
             let failure = failure
             let result = VTCompressionSessionEncodeFrame(session, imageBuffer: buffer,
@@ -87,12 +90,16 @@ final class VideoEncoder: @unchecked Sendable {
                         let keyframe = attachment?.first?[kCMSampleAttachmentKey_NotSync] as? Bool != true
                         if keyframe, let format = CMSampleBufferGetFormatDescription(sample) {
                             var config = Data()
-                            for index in 0..<2 {
+                            for index in 0..<(hevc ? 3 : 2) {
                                 var pointer: UnsafePointer<UInt8>?
                                 var size = 0
-                                try check(CMVideoFormatDescriptionGetH264ParameterSetAtIndex(format,
-                                    parameterSetIndex: index, parameterSetPointerOut: &pointer,
-                                    parameterSetSizeOut: &size, parameterSetCountOut: nil, nalUnitHeaderLengthOut: nil))
+                                if hevc {
+                                    try check(CMVideoFormatDescriptionGetHEVCParameterSetAtIndex(format, parameterSetIndex: index,
+                                        parameterSetPointerOut: &pointer, parameterSetSizeOut: &size, parameterSetCountOut: nil, nalUnitHeaderLengthOut: nil))
+                                } else {
+                                    try check(CMVideoFormatDescriptionGetH264ParameterSetAtIndex(format, parameterSetIndex: index,
+                                        parameterSetPointerOut: &pointer, parameterSetSizeOut: &size, parameterSetCountOut: nil, nalUnitHeaderLengthOut: nil))
+                                }
                                 guard let pointer else { throw error("Нет параметров H.264.") }
                                 config.append(contentsOf: [0,0,0,1])
                                 config.append(pointer, count: size)

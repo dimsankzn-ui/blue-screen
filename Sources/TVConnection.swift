@@ -20,6 +20,7 @@ import Security
     private var timeout: Task<Void, Never>?
     private var heartbeat: DispatchSourceTimer?
     private var inFlight = false
+    private var suspending = false
     private let video = VideoEncoder()
     private var pending: [(UInt32, () -> Void)] = []
     private var sentCount: UInt32 = 0
@@ -84,6 +85,17 @@ import Security
 
     func forget(_ address: String) throws { try PairingStore.remove(address) }
 
+    func suspendAndDisconnect() async {
+        guard connected,let session=connection else { disconnect();return }
+        suspending=true;heartbeat?.cancel();timeout?.cancel();video.stop()
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void,Never>) in
+            var resolved=false
+            func finish() { guard !resolved else { return };resolved=true;continuation.resume(returning: ()) }
+            session.send(content:Data([255,255,255,255]),contentContext:NWConnection.ContentContext.finalMessage,isComplete:true,completion:.contentProcessed { _ in Task { @MainActor in finish() } })
+            Task { @MainActor in try? await Task.sleep(nanoseconds:1_000_000_000);finish() }
+        }
+        disconnect()
+    }
     func disconnect() {
         attempt = UUID()
         timeout?.cancel()
@@ -97,6 +109,7 @@ import Security
         busy = false
         connected = false
         inFlight = false
+        suspending = false
         for item in pending { item.1() }
         pending.removeAll()
         video.stop()
@@ -150,7 +163,7 @@ import Security
                 switch state {
                 case .ready:
                     guard expected != nil, pin != nil || token?.count == 32 else { self.fail("Не удалось проверить устройство."); return }
-                    var hello = Data("BLUSCR04".utf8)
+                    var hello = Data("BLUSCR05".utf8)
                     hello.append(token == nil ? 0 : 1)
                     hello.append(Data(PairingStore.clientID.utf8))
                     hello.append(token ?? Data((pin ?? "").utf8))
@@ -200,7 +213,7 @@ import Security
                         guard let self else { return }
                         do {
                             let caps = try JSONDecoder().decode(DisplayCapabilities.self, from: bytes)
-                            guard caps.protocolVersion == 4, let best = caps.available.first else { throw NSError(domain: "Mode", code: 1) }
+                            guard caps.protocolVersion == 5, let best = caps.available.first else { throw NSError(domain: "Mode", code: 1) }
                             let mode = self.requestedMode ?? best
                             guard caps.available.contains(mode) else {
                                 self.fail("Выбранный режим больше не поддерживается. Выберите «Автоматически»."); return
@@ -264,7 +277,7 @@ import Security
     }
 
     private func sendVideo(_ packet: VideoPacket) {
-        guard connected, let session = connection else { packet.accepted(); return }
+        guard connected, !suspending, let session = connection else { packet.accepted(); return }
         guard packet.data.count + 9 <= 2 * 1024 * 1024 else {
             packet.accepted(); fail("Видеопакет превышает допустимый размер."); return
         }
@@ -288,7 +301,7 @@ import Security
     private func readFeedback(_ session: NWConnection) {
         session.receive(minimumIncompleteLength: 12, maximumLength: 12) { [weak self] data, _, _, error in
             Task { @MainActor in
-                guard let self, self.connection === session else { return }
+                guard let self, !self.suspending, self.connection === session else { return }
                 guard error == nil, let data, data.count == 12 else {
                     self.fail("Телевизор прервал приём видео."); return
                 }

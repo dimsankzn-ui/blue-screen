@@ -50,9 +50,9 @@ import AppKit
                 }
                 print(String(format: "t=%d captured=%d accepted=%d rendered=%d rendered_fps=%.3f", index, preview.frames, tv.framesSent, tv.renderedFrames, tv.renderedFPS))
             }
-            let result: [String: Any] = ["width": mode.width, "height": mode.height, "target_fps": mode.fps, "samples": samples]
+            let result: [String: Any] = ["width": mode.width, "height": mode.height, "codec": mode.codec, "target_fps": mode.fps, "samples": samples]
             let data = try JSONSerialization.data(withJSONObject: result, options: [.prettyPrinted, .sortedKeys])
-            try data.write(to: URL(fileURLWithPath: "evidence/full-hd-benchmark.json"), options: .atomic)
+            try data.write(to: URL(fileURLWithPath: "evidence/video-benchmark.json"), options: .atomic)
         } catch {
             preview.onVideoFrame = nil
             await preview.stop()
@@ -64,7 +64,7 @@ import AppKit
         await preview.stop()
         tv.disconnect()
         await screen.stop()
-        print("PASS: real Full HD capture, hardware encoding, TLS transport and Android rendering completed; inspect actual FPS samples separately")
+        print("PASS: negotiated-mode capture, hardware encoding, TLS transport and Android rendering completed; inspect actual FPS samples separately")
     }
 
     static func failure(_ message: String) -> NSError {

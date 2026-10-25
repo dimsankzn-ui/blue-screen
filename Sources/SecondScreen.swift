@@ -15,6 +15,9 @@ import Combine
         busy = true
         defer { busy = false }
         do {
+            // Hot-plugging a virtual display can make macOS restore cached positions of existing displays.
+            // Preserve their positions in the same transaction that places the new screen.
+            let previousOrigins=Dictionary(uniqueKeysWithValues:NSScreen.screens.compactMap(Self.id).map { ($0,CGDisplayBounds($0).origin) })
             let process = Process()
             process.executableURL = Bundle.main.executableURL!.deletingLastPathComponent().appendingPathComponent("VirtualDisplayHelper")
             guard mode.valid else { throw failure("Неподдерживаемый режим экрана.") }
@@ -62,6 +65,9 @@ import Combine
             guard CGBeginDisplayConfiguration(&config) == .success, let config else {
                 throw failure("Не удалось начать настройку второго экрана.")
             }
+            for (existing,point) in previousOrigins where CGDisplayIsOnline(existing) != 0 && CGDisplayBounds(existing).origin != point {
+                _ = CGConfigureDisplayOrigin(config,existing,Int32(point.x),Int32(point.y))
+            }
             let mirror = CGConfigureDisplayMirrorOfDisplay(config, id, kCGNullDirectDisplay)
             let origin = CGConfigureDisplayOrigin(config, id, Int32(target.x), Int32(target.y))
             let modes = CGDisplayCopyAllDisplayModes(id, nil) as? [CGDisplayMode] ?? []
@@ -86,6 +92,9 @@ import Combine
             guard CGDisplayMirrorsDisplay(id) == kCGNullDirectDisplay,
                 CGDisplayBounds(id).origin == target,
                 NSScreen.screens.contains(where: { Self.id($0) == id && CGDisplayBounds(id).width == Double(mode.width) && CGDisplayBounds(id).height == Double(mode.height) }) else {
+                if ProcessInfo.processInfo.environment["BLUESCREEN_TEST_LOG"] == "1" {
+                    fputs("Requested \(target) / \(mode.title), actual \(CGDisplayBounds(id)), mirror \(CGDisplayMirrorsDisplay(id))\n",stderr)
+                }
                 throw failure("Не удалось подтвердить независимый второй рабочий стол.")
             }
             displayID = id

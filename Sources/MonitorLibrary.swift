@@ -46,7 +46,8 @@ import Combine
             profile.host = address
             changed?()
         } catch { message = error.localizedDescription; return }
-        guard library.canConnect(self) else { message = "Одновременно можно подключить до трёх экранов."; return }
+        guard !library.isSleeping else { message="Mac переходит в сон."; return }
+        guard library.reserveSide(for:self) else { message="Свободных сторон нет. Отключите один из экранов."; return }
         working = true
         message = "Подключаюсь…"
         task = Task {
@@ -81,6 +82,13 @@ import Combine
             message = "Подключено · \(mode.title)"
         }
     }
+    func suspendForSleep() async {
+        working=true; task?.cancel()
+        capture.onVideoFrame=nil
+        await tv.suspendAndDisconnect()
+        await capture.stop(); await screen.stop()
+        working=false; message="Отключено на время сна Mac"
+    }
     func disconnect() {
         working = true
         task?.cancel()
@@ -94,6 +102,12 @@ import Combine
     @Published var monitors: [MonitorSession] = []
     @Published var selected: UUID?
     @Published var error = ""
+    @Published var isSleeping = false
+    @Published var resumeOffered = false
+    private var resumeIDs: [UUID] = []
+    private var preparingForSleep=false
+    private var power: PowerCoordinator?
+    private var observations = Set<AnyCancellable>()
     private let preferences: UserDefaults
     init(preferences: UserDefaults = .standard) {
         self.preferences = preferences
@@ -104,11 +118,14 @@ import Combine
         }
         for profile in profiles { append(profile) }
         selected = monitors.first?.id
+        resumeIDs=(preferences.stringArray(forKey:"sleep.resumeIDs") ?? []).compactMap(UUID.init(uuidString:))
+        resumeOffered = !resumeIDs.isEmpty
         save()
     }
     private func append(_ profile: MonitorProfile) {
         let session = MonitorSession(profile)
         session.changed = { [weak self] in self?.save() }
+        session.objectWillChange.sink { [weak self] in self?.objectWillChange.send() }.store(in:&observations)
         monitors.append(session)
     }
     func save() { if let data = try? JSONEncoder().encode(monitors.map(\.profile)) { preferences.set(data, forKey: "monitors.v1") } }
@@ -127,9 +144,49 @@ import Combine
         if selected == session.id { selected = monitors.first?.id }
         save()
     }
-    func canConnect(_ session: MonitorSession) -> Bool {
-        monitors.filter { $0.id != session.id && ($0.working || $0.tv.busy || $0.tv.connected) }.count < 3
+    func availableSides(for session: MonitorSession) -> [ScreenSide] {
+        let occupied=Set(monitors.filter { $0.id != session.id && ($0.working || $0.tv.busy || $0.tv.connected || $0.screen.displayID != nil) }.map { $0.profile.side })
+        return ScreenSide.allCases.filter { !occupied.contains($0) }
     }
+    func effectiveSide(for session: MonitorSession) -> ScreenSide? {
+        let free=availableSides(for:session)
+        return free.contains(session.profile.side) ? session.profile.side : free.first
+    }
+    func reserveSide(for session: MonitorSession) -> Bool {
+        guard let side=effectiveSide(for:session),canConnect(session) else { return false }
+        session.profile.side=side; save(); return true
+    }
+    func setSide(_ side:ScreenSide,for session:MonitorSession) {
+        guard availableSides(for:session).contains(side),!session.working else { return }
+        session.profile.side=side;save();relayout()
+    }
+    func canConnect(_ session: MonitorSession) -> Bool {
+        !isSleeping && monitors.filter { $0.id != session.id && ($0.working || $0.tv.busy || $0.tv.connected || $0.screen.displayID != nil) }.count < 3 && !availableSides(for:session).isEmpty
+    }
+    func startPowerObservation() { if power==nil { power=PowerCoordinator(library:self) } }
+    func prepareForSleep() async {
+        guard !isSleeping else { return }
+        isSleeping=true;resumeOffered=false;preparingForSleep=true
+        defer { preparingForSleep=false }
+        resumeIDs=monitors.filter { $0.tv.connected || $0.screen.displayID != nil }.map(\.id)
+        preferences.set(resumeIDs.map(\.uuidString),forKey:"sleep.resumeIDs")
+        await withTaskGroup(of:Void.self) { group in
+            for monitor in monitors { group.addTask { await monitor.suspendForSleep() } }
+        }
+    }
+    func didWake() {
+        isSleeping=false
+        resumeOffered = !resumeIDs.isEmpty
+        if resumeOffered { NSApp.activate(ignoringOtherApps:true); NSApp.windows.first?.makeKeyAndOrderFront(nil) }
+    }
+    func acceptResume() {
+        let ids=resumeIDs;declineResume()
+        Task {
+            while preparingForSleep { try? await Task.sleep(nanoseconds:100_000_000) }
+            for id in ids { if let monitor=monitors.first(where:{$0.id==id}) { monitor.connect(in:self) } }
+        }
+    }
+    func declineResume() { resumeOffered=false;resumeIDs=[];preferences.removeObject(forKey:"sleep.resumeIDs") }
     private func origins() -> [UUID: CGPoint] {
         let baseID = NSScreen.screens.compactMap(SecondScreen.id).first { CGDisplayIsBuiltin($0) != 0 } ?? CGMainDisplayID()
         let items = monitors.filter { $0.tv.connected || $0.screen.displayID != nil }.map { ($0.id, $0.profile.side, $0.tv.selectedMode) }
