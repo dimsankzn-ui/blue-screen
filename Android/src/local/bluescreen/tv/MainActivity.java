@@ -147,14 +147,19 @@ public final class MainActivity extends Activity {
         }
         KeyStore keys = KeyStore.getInstance("AndroidKeyStore");
         keys.load(null);
-        String alias = "bluescreen-receiver-rsa-v1";
+        String alias = "bluescreen-receiver-rsa-v2";
         try {
+        if (getSharedPreferences("identity", MODE_PRIVATE).getBoolean("software-tls", false))
+            throw new java.security.ProviderException("Hardware key cannot serve TLS on this firmware");
         if (!keys.containsAlias(alias)) {
             KeyPairGenerator generator = KeyPairGenerator.getInstance(KeyProperties.KEY_ALGORITHM_RSA, "AndroidKeyStore");
-            generator.initialize(new KeyGenParameterSpec.Builder(alias, KeyProperties.PURPOSE_SIGN | KeyProperties.PURPOSE_VERIFY)
+            generator.initialize(new KeyGenParameterSpec.Builder(alias, KeyProperties.PURPOSE_SIGN | KeyProperties.PURPOSE_VERIFY | KeyProperties.PURPOSE_DECRYPT)
                 .setKeySize(2048)
-                .setSignaturePaddings(KeyProperties.SIGNATURE_PADDING_RSA_PKCS1)
-                .setDigests(KeyProperties.DIGEST_SHA256, KeyProperties.DIGEST_SHA512)
+                // Conscrypt may implement TLS RSA signatures via private-key Cipher operations.
+                // Authorize its required padding modes; TLS still applies its own padding/signature format.
+                .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE, KeyProperties.ENCRYPTION_PADDING_RSA_PKCS1)
+                .setSignaturePaddings(KeyProperties.SIGNATURE_PADDING_RSA_PKCS1, KeyProperties.SIGNATURE_PADDING_RSA_PSS)
+                .setDigests(KeyProperties.DIGEST_SHA256, KeyProperties.DIGEST_SHA384, KeyProperties.DIGEST_SHA512)
                 .setCertificateSubject(new X500Principal("CN=BlueScreen TV"))
                 .setCertificateSerialNumber(new BigInteger(120, random))
                 .setCertificateNotBefore(new Date(System.currentTimeMillis() - 86400000L))
@@ -189,7 +194,7 @@ public final class MainActivity extends Activity {
 
     private SSLContext createTLS() throws Exception {
         KeyStore keys = identity();
-        String alias = keys.containsAlias("session") ? "session" : "bluescreen-receiver-rsa-v1";
+        String alias = keys.containsAlias("session") ? "session" : "bluescreen-receiver-rsa-v2";
         byte[] cert = keys.getCertificate(alias).getEncoded();
         // Public certificate only; used for exact fingerprint verification during development.
         try (FileOutputStream file = openFileOutput("receiver-cert.der", MODE_PRIVATE)) { file.write(cert); }
@@ -199,7 +204,22 @@ public final class MainActivity extends Activity {
         KeyManagerFactory manager = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
         manager.init(keys, "AndroidKeyStore".equals(keys.getType()) ? null : new char[0]);
         SSLContext context = SSLContext.getInstance("TLS");
-        context.init(manager.getKeyManagers(), null, random);
+        javax.net.ssl.X509KeyManager delegate = null;
+        for (javax.net.ssl.KeyManager candidate : manager.getKeyManagers())
+            if (candidate instanceof javax.net.ssl.X509KeyManager) delegate = (javax.net.ssl.X509KeyManager)candidate;
+        if (delegate == null) throw new java.security.KeyStoreException("No TLS key manager");
+        final javax.net.ssl.X509KeyManager selected = delegate;
+        // Never let the platform choose an old alias or a certificate different from the displayed fingerprint.
+        javax.net.ssl.X509ExtendedKeyManager pinned = new javax.net.ssl.X509ExtendedKeyManager() {
+            public String[] getClientAliases(String type, java.security.Principal[] issuers) { return null; }
+            public String chooseClientAlias(String[] types, java.security.Principal[] issuers, Socket socket) { return null; }
+            public String[] getServerAliases(String type, java.security.Principal[] issuers) { return "RSA".equals(type) ? new String[]{alias} : null; }
+            public String chooseServerAlias(String type, java.security.Principal[] issuers, Socket socket) { return "RSA".equals(type) ? alias : null; }
+            public String chooseEngineServerAlias(String type, java.security.Principal[] issuers, javax.net.ssl.SSLEngine engine) { return "RSA".equals(type) ? alias : null; }
+            public java.security.cert.X509Certificate[] getCertificateChain(String name) { return alias.equals(name) ? selected.getCertificateChain(alias) : null; }
+            public java.security.PrivateKey getPrivateKey(String name) { return alias.equals(name) ? selected.getPrivateKey(alias) : null; }
+        };
+        context.init(new javax.net.ssl.KeyManager[]{pinned}, null, random);
         return context;
     }
 
@@ -338,7 +358,25 @@ public final class MainActivity extends Activity {
                         }
                     }
                 } catch (Exception error) {
-                    if (generation == mine && authenticated) android.util.Log.e("BlueScreen", "SESSION_ENDED " + error.getClass().getSimpleName(), error);
+                    if (generation == mine) {
+                        // Some firmware generates hardware RSA keys but Conscrypt cannot use them for TLS.
+                        // Retry with our existing persistent app-private identity implementation, never plaintext.
+                        String reason = error.toString();
+                        if (!authenticated && reason.contains("RSA routines:") &&
+                            !new File(getNoBackupFilesDir(), "receiver-identity.p12").exists() &&
+                            !getSharedPreferences("identity", MODE_PRIVATE).getBoolean("software-tls", false)) {
+                            if (getSharedPreferences("identity", MODE_PRIVATE).edit().putBoolean("software-tls", true).commit())
+                                runOnUiThread(() -> { if (generation == mine) recreate(); });
+                        }
+                        android.util.Log.w("BlueScreen", authenticated ? "SESSION_ENDED" : "HANDSHAKE_ENDED", error);
+                        if (!authenticated) {
+                            java.io.StringWriter trace = new java.io.StringWriter();
+                            error.printStackTrace(new java.io.PrintWriter(trace));
+                            try (FileOutputStream file = openFileOutput("last-handshake-error.txt", MODE_PRIVATE)) {
+                                file.write(trace.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                            } catch (Exception ignored) {}
+                        }
+                    }
                 } finally {
                     if (decoder != null) decoder.close();
                     client = null;
