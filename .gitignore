@@ -1,0 +1,22 @@
+# Local builds, environments and credentials
+build/
+Android/build/
+.venv/
+__pycache__/
+.DS_Store
+.env
+.env.*
+*.keystore
+*.jks
+*.pem
+*.key
+*.der
+*.p12
+*.mobileprovision
+
+# Private development reports / captures; never publish automatically
+evidence/
+STATUS.md
+docs/iteration-*.md
+docs/status-*.md
+docs/feasibility.md

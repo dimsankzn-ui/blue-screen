@@ -1,0 +1,11 @@
+<!doctype html>
+<html lang="ru"><meta charset="utf-8"><title>BlueScreen — проверка браузера</title>
+<style>
+body{margin:0;background:#071b32;color:#eaf6ff;font:24px system-ui;padding:45px}h1{font-size:48px}p{max-width:900px}#clock{font:40px monospace;color:#73d7ff}.track{background:#163651;height:90px;overflow:hidden;border-radius:12px}.box{height:90px;width:90px;background:#3cc5ff;animation:move 4s linear infinite alternate}@keyframes move{to{transform:translateX(800px)}}
+</style>
+<h1>Окно браузера на втором экране</h1>
+<p>Эта страница открыта на Mac. Если она видна на телевизоре — перенос окна и передача изображения работают.</p>
+<p id="clock"></p><div class="track"><div class="box"></div></div>
+<p>Проверка изображения. Звук пока не передаётся.</p>
+<script>function tick(){document.getElementById('clock').textContent=new Date().toLocaleTimeString('ru-RU')+' · '+Math.floor(performance.now()/100)+' тактов'}tick();setInterval(tick,100);</script>
+</html>
