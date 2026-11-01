@@ -289,6 +289,7 @@ public final class ReceiverService extends android.app.Service {
                     while (generation == mine) {
                         byte[] data = Wire.readFrame(input);
                         if(data==null) break; // Mac sleep: release TV to Home before waiting for resume.
+                        boolean sendFeedback = data.length == 0;
                         if (data.length > 0) {
                             if (data.length <= 9) throw new java.io.IOException("Оборван заголовок видео");
                             int kind = data[0] & 255;
@@ -296,6 +297,7 @@ public final class ReceiverService extends android.app.Service {
                             if (timeUs < 0) throw new java.io.IOException("Неверное время кадра");
                             byte[] payload = java.util.Arrays.copyOfRange(data, 9, data.length);
                             if (kind == 1) {
+                                sendFeedback = true;
                                 if (decoder == null) {
                                     long deadline = System.nanoTime() + 5_000_000_000L;
                                     while ((surface == null || !surface.isValid()) && System.nanoTime() < deadline) Thread.sleep(10);
@@ -303,6 +305,7 @@ public final class ReceiverService extends android.app.Service {
                                     decoder = new VideoDecoder(width, height, fps, payload, surface, selected.codec);
                                 }
                             } else if (kind == 2 && decoder != null) {
+                                sendFeedback = true;
                                 decoder.queue(payload, timeUs);
                             } else if (kind == 3) {
                                 if (audio == null) audio = new AudioPlayer();
@@ -312,10 +315,12 @@ public final class ReceiverService extends android.app.Service {
                         int accepted = decoder == null ? 0 : decoder.accepted;
                         int rendered = decoder == null ? 0 : decoder.rendered;
                         int measured = decoder == null ? 0 : decoder.fpsMilli;
-                        output.writeInt(accepted);
-                        output.writeInt(rendered);
-                        output.writeInt(measured);
-                        output.flush();
+                        if (sendFeedback) {
+                            output.writeInt(accepted);
+                            output.writeInt(rendered);
+                            output.writeInt(measured);
+                            output.flush();
+                        }
                         if (decoder != null && System.currentTimeMillis() - updated >= 1000) {
                             updated = System.currentTimeMillis();
                             main.post(() -> { MainActivity activity=ui.get(); if(generation==mine && activity!=null) activity.video(); });

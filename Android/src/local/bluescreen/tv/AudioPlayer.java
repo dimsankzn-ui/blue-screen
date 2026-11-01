@@ -13,7 +13,7 @@ final class AudioPlayer implements AutoCloseable {
     private static final int RATE = 48000;
     private static final int CHANNELS = 2;
     private static final int BYTES_PER_FRAME = 4;
-    private final ArrayBlockingQueue<byte[]> packets = new ArrayBlockingQueue<>(16);
+    private final ArrayBlockingQueue<byte[]> packets = new ArrayBlockingQueue<>(20);
     private final AudioTrack track;
     private final Thread output;
     private volatile boolean running = true;
@@ -30,15 +30,20 @@ final class AudioPlayer implements AutoCloseable {
                 .setContentType(AudioAttributes.CONTENT_TYPE_MOVIE).build())
             .setAudioFormat(new AudioFormat.Builder().setEncoding(AudioFormat.ENCODING_PCM_16BIT)
                 .setSampleRate(RATE).setChannelMask(AudioFormat.CHANNEL_OUT_STEREO).build())
-            .setBufferSizeInBytes(Math.max(min, 19200))
+            .setBufferSizeInBytes(Math.max(min, 38400))
             .setTransferMode(AudioTrack.MODE_STREAM).build();
         if (track.getState() != AudioTrack.STATE_INITIALIZED) {
             track.release();
             throw new IOException("AudioTrack не инициализирован");
         }
-        track.play();
         output = new Thread(() -> {
             try {
+                android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_AUDIO);
+                // Prebuffer ~100ms to absorb Wi-Fi jitter before starting AudioTrack.
+                // The Mac keeps its own output; only the TV's playback waits briefly.
+                while (running && packets.size() < 5) Thread.sleep(5);
+                if (!running) return;
+                track.play();
                 while (running) {
                     byte[] packet = packets.poll(100, TimeUnit.MILLISECONDS);
                     if (packet == null) continue;
@@ -50,7 +55,8 @@ final class AudioPlayer implements AutoCloseable {
                         offset += written;
                     }
                     if (++playedPackets == 1 || playedPackets % 250 == 0)
-                        android.util.Log.i("BlueScreen", "AUDIO_PLAYED packets=" + playedPackets);
+                        android.util.Log.i("BlueScreen", "AUDIO_PLAYED packets=" + playedPackets
+                            + " underruns=" + track.getUnderrunCount() + " queued=" + packets.size());
                 }
             } catch (InterruptedException ignored) {
                 Thread.currentThread().interrupt();

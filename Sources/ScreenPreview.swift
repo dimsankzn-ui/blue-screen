@@ -40,9 +40,10 @@ import CoreImage
             let configuration = SCStreamConfiguration()
             configuration.width = mode.width
             configuration.height = mode.height
-            // The virtual screen is 60 Hz; avoid capture-side phase throttling at the same cadence.
-            configuration.minimumFrameInterval = CMTime(value: 1000, timescale: Int32(mode.fpsMilli * 2))
-            configuration.queueDepth = 3
+            // Capture at the actual output FPS. Double-rate capture created excessive
+            // ScreenCaptureKit/VideoToolbox pressure and occasional long frame gaps.
+            configuration.minimumFrameInterval = CMTime(value: 1000, timescale: Int32(mode.fpsMilli))
+            configuration.queueDepth = 4
             configuration.capturesAudio = true
             configuration.sampleRate = AudioPCM.sampleRate
             configuration.channelCount = AudioPCM.channels
@@ -130,7 +131,7 @@ private final class CaptureFrames: @unchecked Sendable {
         lock.lock()
         count += 1
         latest = (buffer, time)
-        let preview = time.seconds - lastPreview >= 0.2
+        let preview = time.seconds - lastPreview >= 0.5
         if preview { lastPreview = time.seconds }
         let total = count
         let callback = handler

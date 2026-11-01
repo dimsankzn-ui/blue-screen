@@ -21,6 +21,8 @@ import Security
     private var heartbeat: DispatchSourceTimer?
     private var inFlight = false
     private var audioPackets = 0
+    private var queuedAudio = 0
+    private var skippedAudio = 0
     private var suspending = false
     private let video = VideoEncoder()
     private var pending: [(UInt32, () -> Void)] = []
@@ -110,6 +112,7 @@ import Security
         busy = false
         connected = false
         inFlight = false
+        queuedAudio = 0
         suspending = false
         for item in pending { item.1() }
         pending.removeAll()
@@ -250,7 +253,7 @@ import Security
                 }
             }, failure: { [weak self] message in Task { @MainActor in self?.fail(message) } })
         } catch { fail(error.localizedDescription); return }
-        sentCount = 0; acceptedCount = 0; totalBytes = 0; audioPackets = 0
+        sentCount = 0; acceptedCount = 0; totalBytes = 0; audioPackets = 0; queuedAudio = 0; skippedAudio = 0
         renderedFrames = 0; renderedFPS = 0; framesSent = 0; bytesSent = 0
         connected = true
         var setup = Data()
@@ -286,6 +289,9 @@ import Security
     private func sendAudio(_ pcm: Data) {
         guard connected, !suspending, let session = connection else { return }
         guard pcm.count > 0 && pcm.count <= 65536 && pcm.count % 4 == 0 else { return }
+        // Never accumulate unbounded stale audio when Wi-Fi momentarily stalls.
+        guard queuedAudio < 8 else { skippedAudio += 1; return }
+        queuedAudio += 1
         var payload = Data([3])
         payload.append(Data(repeating: 0, count: 8))
         payload.append(pcm)
@@ -294,8 +300,12 @@ import Security
         bytes.append(payload)
         audioPackets += 1
         totalBytes += bytes.count
-        session.send(content: bytes, completion: .contentProcessed { [weak self] error in
-            if let error { Task { @MainActor in self?.fail(error.localizedDescription) } }
+        session.send(content: bytes, completion: .contentProcessed { [weak self, weak session] error in
+            Task { @MainActor in
+                guard let self, let session, self.connection === session else { return }
+                self.queuedAudio = max(0, self.queuedAudio - 1)
+                if let error { self.fail(error.localizedDescription) }
+            }
         })
     }
 

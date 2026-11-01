@@ -11,7 +11,7 @@ struct VideoPacket {
 final class VideoEncoder: @unchecked Sendable {
     private let queue = DispatchQueue(label: "local.bluescreen.h264", qos: .userInitiated)
     private var session: VTCompressionSession?
-    private var budget = DispatchSemaphore(value: 6)
+    private var budget = DispatchSemaphore(value: 4)
     private var handler: ((VideoPacket) -> Void)?
     private var failure: ((String) -> Void)?
     private var origin: CMTime?
@@ -36,8 +36,8 @@ final class VideoEncoder: @unchecked Sendable {
                     kVTCompressionPropertyKey_RealTime: true,
                     kVTCompressionPropertyKey_AllowFrameReordering: false,
                     kVTCompressionPropertyKey_ExpectedFrameRate: Int(ceil(mode.fps)),
-                    kVTCompressionPropertyKey_AverageBitRate: min(80_000_000, max(2_000_000, Int(18_000_000 * Double(mode.width * mode.height) / (1920 * 1080) * mode.fps / 60))),
-                    kVTCompressionPropertyKey_MaxKeyFrameInterval: Int(ceil(mode.fps * 2)),
+                    kVTCompressionPropertyKey_AverageBitRate: VideoBitrate.target(for: mode),
+                    kVTCompressionPropertyKey_MaxKeyFrameInterval: Int(ceil(mode.fps)),
                     kVTCompressionPropertyKey_ProfileLevel: hevc ? kVTProfileLevel_HEVC_Main_AutoLevel : kVTProfileLevel_H264_High_AutoLevel]
                 for (key, value) in properties {
                     let status = VTSessionSetProperty(created, key: key, value: value as CFTypeRef)
@@ -59,7 +59,7 @@ final class VideoEncoder: @unchecked Sendable {
             usesHEVC = hevc
             frameRateMilli = mode.fpsMilli
             session = created
-            budget = DispatchSemaphore(value: 6)
+            budget = DispatchSemaphore(value: 4)
             self.handler = handler
             self.failure = failure
             origin = nil
