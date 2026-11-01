@@ -6,11 +6,13 @@ xcrun clang -fobjc-arc -mmacosx-version-min=14.2 -c Sources/VirtualDisplay.m -o 
 xcrun clang -fobjc-arc -mmacosx-version-min=14.2 -framework AppKit -framework CoreGraphics Tools/VirtualDisplayHelper.m build/VirtualDisplay.o -o build/VirtualDisplayHelper
 cp build/VirtualDisplayHelper build/BlueScreen.app/Contents/MacOS/VirtualDisplayHelper
 zsh Tools/sign-macos.sh build/BlueScreen.app/Contents/MacOS/VirtualDisplayHelper local.bluescreen.display-helper
-xcrun swiftc -parse-as-library -swift-version 5 -O -target arm64-apple-macosx14.2 -import-objc-header Sources/VirtualDisplay.h Sources/DisplayMode.swift Sources/Diagnostics.swift Sources/SecondScreen.swift Sources/ScreenPreview.swift Sources/VideoEncoder.swift Sources/TVConnection.swift Sources/Presence.swift Sources/PowerCoordinator.swift Sources/MonitorLibrary.swift Sources/App.swift build/VirtualDisplay.o -o build/BlueScreen.app/Contents/MacOS/BlueScreen
+xcrun swiftc -parse-as-library -swift-version 5 -O -target arm64-apple-macosx14.2 -import-objc-header Sources/VirtualDisplay.h Sources/DisplayMode.swift Sources/Diagnostics.swift Sources/SecondScreen.swift Sources/AudioPCM.swift Sources/ScreenPreview.swift Sources/VideoEncoder.swift Sources/TVConnection.swift Sources/Presence.swift Sources/PowerCoordinator.swift Sources/MonitorLibrary.swift Sources/App.swift build/VirtualDisplay.o -o build/BlueScreen.app/Contents/MacOS/BlueScreen
 cp Info.plist build/BlueScreen.app/Contents/Info.plist
 mkdir -p build/BlueScreen.app/Contents/Resources
 cp Assets/AppIcon.icns build/BlueScreen.app/Contents/Resources/AppIcon.icns
 zsh Tools/sign-macos.sh build/BlueScreen.app local.bluescreen.mac
 xcrun swiftc -parse-as-library -swift-version 5 -target arm64-apple-macosx14.2 Sources/Diagnostics.swift Tests/Checks.swift -o build/checks
 build/checks
+xcrun swiftc -parse-as-library -swift-version 5 -target arm64-apple-macosx14.2 Sources/AudioPCM.swift Tests/AudioPCMChecks.swift -o build/audio-pcm-checks
+build/audio-pcm-checks
 xcrun swiftc -parse-as-library -swift-version 5 -target arm64-apple-macosx14.2 -import-objc-header Sources/VirtualDisplay.h Sources/DisplayMode.swift Sources/Diagnostics.swift Sources/SecondScreen.swift Tests/VirtualScreenChecks.swift build/VirtualDisplay.o -o build/virtual-screen-checks

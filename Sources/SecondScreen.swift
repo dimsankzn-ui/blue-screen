@@ -153,7 +153,7 @@ import Combine
         window.title = "BlueScreen • проверка второго рабочего стола"
         window.isReleasedWhenClosed = false
         window.backgroundColor = NSColor(calibratedRed: 0.03, green: 0.09, blue: 0.18, alpha: 1)
-        let label = NSTextField(wrappingLabelWithString: "ВТОРОЙ РАБОЧИЙ СТОЛ\n\nBlueScreen TV • 1920 × 1080\n\nЭто отдельное окно Mac. Его можно перетащить обратно на экран ноутбука.\n\nПроверка изображения. Звук пока не передаётся.")
+        let label = NSTextField(wrappingLabelWithString: "ВТОРОЙ РАБОЧИЙ СТОЛ\n\nBlueScreen TV • 1920 × 1080\n\nЭто отдельное окно Mac. Его можно перетащить обратно на экран ноутбука.\n\nЗвук системы дублируется на телевизор и Mac.")
         label.textColor = .white
         label.font = .systemFont(ofSize: 28, weight: .medium)
         label.alignment = .center

@@ -20,6 +20,7 @@ import Security
     private var timeout: Task<Void, Never>?
     private var heartbeat: DispatchSourceTimer?
     private var inFlight = false
+    private var audioPackets = 0
     private var suspending = false
     private let video = VideoEncoder()
     private var pending: [(UInt32, () -> Void)] = []
@@ -163,7 +164,7 @@ import Security
                 switch state {
                 case .ready:
                     guard expected != nil, pin != nil || token?.count == 32 else { self.fail("Не удалось проверить устройство."); return }
-                    var hello = Data("BLUSCR05".utf8)
+                    var hello = Data("BLUSCR06".utf8)
                     hello.append(token == nil ? 0 : 1)
                     hello.append(Data(PairingStore.clientID.utf8))
                     hello.append(token ?? Data((pin ?? "").utf8))
@@ -213,7 +214,7 @@ import Security
                         guard let self else { return }
                         do {
                             let caps = try JSONDecoder().decode(DisplayCapabilities.self, from: bytes)
-                            guard caps.protocolVersion == 5, let best = caps.available.first else { throw NSError(domain: "Mode", code: 1) }
+                            guard caps.protocolVersion == 6, let best = caps.available.first else { throw NSError(domain: "Mode", code: 1) }
                             let mode = self.requestedMode ?? best
                             guard caps.available.contains(mode) else {
                                 self.fail("Выбранный режим больше не поддерживается. Выберите «Автоматически»."); return
@@ -249,7 +250,7 @@ import Security
                 }
             }, failure: { [weak self] message in Task { @MainActor in self?.fail(message) } })
         } catch { fail(error.localizedDescription); return }
-        sentCount = 0; acceptedCount = 0; totalBytes = 0
+        sentCount = 0; acceptedCount = 0; totalBytes = 0; audioPackets = 0
         renderedFrames = 0; renderedFPS = 0; framesSent = 0; bytesSent = 0
         connected = true
         var setup = Data()
@@ -274,6 +275,28 @@ import Security
     func frameHandler() -> (CVPixelBuffer, CMTime) -> Void {
         let video = video
         return { buffer, time in video.submit(buffer, time) }
+    }
+
+    func audioHandler() -> (Data) -> Void {
+        return { [weak self] pcm in
+            Task { @MainActor in self?.sendAudio(pcm) }
+        }
+    }
+
+    private func sendAudio(_ pcm: Data) {
+        guard connected, !suspending, let session = connection else { return }
+        guard pcm.count > 0 && pcm.count <= 65536 && pcm.count % 4 == 0 else { return }
+        var payload = Data([3])
+        payload.append(Data(repeating: 0, count: 8))
+        payload.append(pcm)
+        var length = UInt32(payload.count).bigEndian
+        var bytes = withUnsafeBytes(of: &length) { Data($0) }
+        bytes.append(payload)
+        audioPackets += 1
+        totalBytes += bytes.count
+        session.send(content: bytes, completion: .contentProcessed { [weak self] error in
+            if let error { Task { @MainActor in self?.fail(error.localizedDescription) } }
+        })
     }
 
     private func sendVideo(_ packet: VideoPacket) {
@@ -325,8 +348,11 @@ import Security
                     self.renderedFrames = Int(number(4))
                     self.renderedFPS = Double(number(8)) / 1000
                 }
-                if acknowledged > 0, self.status != "Передаётся видео Full HD. Звук пока не передаётся." {
-                    self.status = "Передаётся видео Full HD. Звук пока не передаётся."
+                if acknowledged > 0 {
+                    let message = self.audioPackets > 0
+                        ? "Передаётся изображение и системный звук Mac (дублирование)."
+                        : "Передаётся видео. Ожидаю системный аудиопоток Mac."
+                    if self.status != message { self.status = message }
                 }
                 self.readFeedback(session)
             }

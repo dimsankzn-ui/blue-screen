@@ -12,6 +12,11 @@ import CoreImage
     private var capture: SCStream?
     private(set) var latestFrame: CGImage?
     private nonisolated let videoFrames = CaptureFrames()
+    private nonisolated let audioFrames = CaptureAudio()
+    var onAudioFrame: ((Data) -> Void)? {
+        get { nil }
+        set { audioFrames.set(newValue) }
+    }
     var onVideoFrame: ((CVPixelBuffer, CMTime) -> Void)? {
         get { nil }
         set { videoFrames.set(newValue) }
@@ -38,18 +43,24 @@ import CoreImage
             // The virtual screen is 60 Hz; avoid capture-side phase throttling at the same cadence.
             configuration.minimumFrameInterval = CMTime(value: 1000, timescale: Int32(mode.fpsMilli * 2))
             configuration.queueDepth = 3
-            configuration.capturesAudio = false
+            configuration.capturesAudio = true
+            configuration.sampleRate = AudioPCM.sampleRate
+            configuration.channelCount = AudioPCM.channels
+            configuration.excludesCurrentProcessAudio = true
+            if #available(macOS 15.0, *) { configuration.captureMicrophone = false }
             configuration.showsCursor = true
             let stream = SCStream(filter: SCContentFilter(display: display, excludingWindows: []),
                 configuration: configuration, delegate: self)
             try stream.addStreamOutput(self, type: .screen,
                 sampleHandlerQueue: DispatchQueue(label: "local.bluescreen.preview", qos: .userInitiated))
+            try stream.addStreamOutput(self, type: .audio,
+                sampleHandlerQueue: DispatchQueue(label: "local.bluescreen.audio", qos: .userInitiated))
             capture = stream
             frames = 0
             videoFrames.reset()
             try await stream.startCapture()
             running = true
-            status = "Локальный предпросмотр второго экрана. Звук не захватывается, файлы не записываются."
+            status = "Захват экрана и системного звука Mac. Звук на Mac остаётся включённым."
         } catch {
             let stream = capture
             capture = nil
@@ -71,6 +82,10 @@ import CoreImage
 
     nonisolated func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer,
         of type: SCStreamOutputType) {
+        if type == .audio {
+            if let pcm = AudioPCM.encode(sampleBuffer) { audioFrames.consume(pcm) }
+            return
+        }
         guard type == .screen, sampleBuffer.isValid,
             let attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: false) as? [[SCStreamFrameInfo: Any]],
             let raw = attachments.first?[.status] as? Int,
@@ -122,5 +137,15 @@ private final class CaptureFrames: @unchecked Sendable {
         lock.unlock()
         callback?(buffer, time)
         return (preview, total)
+    }
+}
+
+private final class CaptureAudio: @unchecked Sendable {
+    private let lock = NSLock()
+    private var handler: ((Data) -> Void)?
+    func set(_ value: ((Data) -> Void)?) { lock.lock(); handler = value; lock.unlock() }
+    func consume(_ pcm: Data) {
+        lock.lock(); let callback = handler; lock.unlock()
+        callback?(pcm)
     }
 }

@@ -241,6 +241,7 @@ public final class ReceiverService extends android.app.Service {
             while (generation == mine) {
                 boolean authenticated = false;
                 VideoDecoder decoder = null;
+                AudioPlayer audio = null;
                 try (SSLSocket socket = (SSLSocket) server.accept()) {
                     client = socket;
                     socket.setSoTimeout(8000);
@@ -303,7 +304,10 @@ public final class ReceiverService extends android.app.Service {
                                 }
                             } else if (kind == 2 && decoder != null) {
                                 decoder.queue(payload, timeUs);
-                            } else throw new java.io.IOException("Неверный порядок видеопакетов");
+                            } else if (kind == 3) {
+                                if (audio == null) audio = new AudioPlayer();
+                                audio.queue(payload);
+                            } else throw new java.io.IOException("Неверный тип или порядок пакетов");
                         }
                         int accepted = decoder == null ? 0 : decoder.accepted;
                         int rendered = decoder == null ? 0 : decoder.rendered;
@@ -338,6 +342,7 @@ public final class ReceiverService extends android.app.Service {
                         }
                     }
                 } finally {
+                    if (audio != null) audio.close();
                     if (decoder != null) decoder.close();
                     client = null;
                     if(authenticated) {

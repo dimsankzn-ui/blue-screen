@@ -71,6 +71,6 @@ final class DisplayCapabilities {
     byte[] json() throws Exception {
         JSONArray values=new JSONArray();
         for(Mode m:modes) values.put(new JSONObject().put("width",m.width).put("height",m.height).put("fpsMilli",m.fpsMilli).put("codec",m.codec));
-        return new JSONObject().put("protocolVersion",5).put("physicalWidth",physicalWidth).put("physicalHeight",physicalHeight).put("modes",values).toString().getBytes(StandardCharsets.UTF_8);
+        return new JSONObject().put("protocolVersion",6).put("physicalWidth",physicalWidth).put("physicalHeight",physicalHeight).put("modes",values).toString().getBytes(StandardCharsets.UTF_8);
     }
 }

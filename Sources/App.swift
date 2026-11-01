@@ -70,7 +70,7 @@ struct Dashboard: View {
             }
             Divider()
             HStack {
-                Text("До 3 экранов одновременно · Звук пока остаётся на Mac").font(.caption).foregroundStyle(.secondary)
+                Text("До 3 экранов одновременно · Системный звук дублируется на Mac и подключённые ТВ").font(.caption).foregroundStyle(.secondary)
                 Spacer()
                 if !screenAllowed {
                     Button("Разрешить запись экрана") {

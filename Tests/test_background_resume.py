@@ -18,7 +18,7 @@ client=b'DDDDDDDD-DDDD-4DDD-8DDD-DDDDDDDDDDDD'
 def connect(mode,secret):
  s=context.wrap_socket(socket.create_connection((args.host,8845),timeout=5),server_hostname=args.host)
  assert s.getpeercert(binary_form=True)==cert
- s.sendall(b'BLUSCR05'+bytes([mode])+client+secret);assert exact(s,1)==b'\x01'
+ s.sendall(b'BLUSCR06'+bytes([mode])+client+secret);assert exact(s,1)==b'\x01'
  token=exact(s,32);size=struct.unpack('>I',exact(s,4))[0];assert 0<size<=16384
  caps=json.loads(exact(s,size));chosen=next(m for m in caps['modes'] if m['width']==1920)
  s.sendall(struct.pack('>IIII',chosen['width'],chosen['height'],chosen['fpsMilli'],0));exact(s,12)

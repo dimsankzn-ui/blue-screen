@@ -26,6 +26,7 @@ import Combine
             guard let self, !connected, !self.working else { return }
             self.working = true
             self.capture.onVideoFrame = nil
+            self.capture.onAudioFrame = nil
             Task {
                 await self.capture.stop(); await self.screen.stop()
                 self.message = self.tv.status
@@ -72,10 +73,11 @@ import Combine
             }
             library.relayout()
             capture.onVideoFrame = tv.frameHandler()
+            capture.onAudioFrame = tv.audioHandler()
             await capture.start(displayID: id, mode: mode)
             capture.sendLatestVideoFrame()
             guard capture.running, !Task.isCancelled else {
-                let error = capture.status; tv.disconnect(); capture.onVideoFrame = nil
+                let error = capture.status; tv.disconnect(); capture.onVideoFrame = nil; capture.onAudioFrame = nil
                 await capture.stop(); await screen.stop(); message = error; return
             }
             online = true
@@ -85,6 +87,7 @@ import Combine
     func suspendForSleep() async {
         working=true; task?.cancel()
         capture.onVideoFrame=nil
+        capture.onAudioFrame=nil
         await tv.suspendAndDisconnect()
         await capture.stop(); await screen.stop()
         working=false; message="Отключено на время сна Mac"
@@ -94,6 +97,7 @@ import Combine
         task?.cancel()
         tv.disconnect()
         capture.onVideoFrame = nil
+        capture.onAudioFrame = nil
         task = Task { await capture.stop(); await screen.stop(); working = false; message = "Отключено" }
     }
 }

@@ -15,9 +15,15 @@ JAVA_HOME="$jdk" "$bt/d8" --lib "$platform" --min-api 30 --output build/dex buil
 "$bt/aapt2" link -I "$platform" --manifest AndroidManifest.xml -R build/resources.zip -A assets --min-sdk-version 30 --target-sdk-version 34 -o build/unsigned.apk
 zip -q -j build/unsigned.apk build/dex/classes*.dex
 "$bt/zipalign" -f -p 4 build/unsigned.apk build/aligned.apk
-if [[ ! -f build/development.keystore ]]; then
-    "$jdk/bin/keytool" -genkeypair -keystore build/development.keystore -storepass android -keypass android -alias bluescreen -keyalg RSA -keysize 2048 -validity 3650 -dname "CN=BlueScreen Local Development" -noprompt
+keystore="${BLUESCREEN_ANDROID_KEYSTORE:-build/development.keystore}"
+apk="${BLUESCREEN_ANDROID_APK:-build/BlueScreen-TV.apk}"
+if [[ ! -f "$keystore" ]]; then
+    if [[ -n "${BLUESCREEN_ANDROID_KEYSTORE:-}" ]]; then
+        print -u2 "Existing Android signing keystore not found: $keystore"
+        exit 1
+    fi
+    "$jdk/bin/keytool" -genkeypair -keystore "$keystore" -storepass android -keypass android -alias bluescreen -keyalg RSA -keysize 2048 -validity 3650 -dname "CN=BlueScreen Local Development" -noprompt
 fi
-JAVA_HOME="$jdk" "$bt/apksigner" sign --ks build/development.keystore --ks-key-alias bluescreen --ks-pass pass:android --out build/BlueScreen-TV.apk build/aligned.apk
-JAVA_HOME="$jdk" "$bt/apksigner" verify build/BlueScreen-TV.apk
-echo "PASS: Android TV APK built and signature verified"
+JAVA_HOME="$jdk" "$bt/apksigner" sign --ks "$keystore" --ks-key-alias bluescreen --ks-pass pass:android --out "$apk" build/aligned.apk
+JAVA_HOME="$jdk" "$bt/apksigner" verify "$apk"
+echo "PASS: Android TV APK built and signature verified: $apk"
